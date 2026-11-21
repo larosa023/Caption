@@ -94,6 +94,21 @@ jobs:
           if (Test-Path $out) { Get-Content $out } else { Write-Host "no result file" }
           if ($p.ExitCode -ne 0) { throw "UI test failed ($($p.ExitCode))" }
 
+      - name: App start and quit (portable)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force apptest | Out-Null
+          Copy-Item publish/Caption.exe apptest/
+          New-Item -ItemType File -Force apptest/portable | Out-Null
+          $p = Start-Process -FilePath (Resolve-Path apptest/Caption.exe) -ArgumentList '--tray' -PassThru
+          Start-Sleep -Seconds 10
+          if ($p.HasExited) { Get-Content apptest/data/caption.log -ErrorAction SilentlyContinue; throw "Caption exited on its own ($($p.ExitCode))" }
+          Start-Process -FilePath (Resolve-Path apptest/Caption.exe) -ArgumentList '--quit' -Wait
+          if (-not $p.WaitForExit(15000)) { $p.Kill(); throw "Caption didn't quit" }
+          Get-Content apptest/data/caption.log
+          if (-not (Select-String -Path apptest/data/caption.log -Pattern 'Started v' -Quiet)) { throw "no start line in the log" }
+          if (Select-String -Path apptest/data/caption.log -Pattern 'ERROR' -Quiet) { throw "errors in the log" }
+
       - name: Checksums
         shell: bash
         run: |
