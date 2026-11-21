@@ -51,6 +51,7 @@ jobs:
         shell: pwsh
         env:
           CAPTION_BEAM: "5"
+          CAPTION_DEBUG: "1"
           CAPTION_THREADS: "4"
         run: |
           $root = (Get-Location).Path
@@ -61,6 +62,7 @@ jobs:
           $log = Join-Path $env:LOCALAPPDATA 'Caption\caption.log'
           if (Test-Path $log) { Write-Host '--- caption.log'; Get-Content $log -Tail 40 }
           Copy-Item test/ref.srt out/ -ErrorAction SilentlyContinue
+          Copy-Item $log out/caption.log -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { throw "eval failed ($($p.ExitCode))" }
 
       - uses: actions/upload-artifact@v4

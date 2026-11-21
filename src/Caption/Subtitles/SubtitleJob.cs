@@ -356,13 +356,17 @@ namespace Caption.Subtitles
 
                 double baseTime = offset + from / (double)Rate;
                 float rms = Rms(samples, 0, n);
+                if (Debug) Log.Info($"[subs] window {baseTime:0.00}–{baseTime + n / (double)Rate:0.00} rms {rms:0.000}: {res.Segments.Count} segments");
                 foreach (var seg in res.Segments)
                 {
-                    if (seg.Words == null || seg.Words.Count == 0) continue;
-                    if (seg.T0 * Rate / 100 > n + Rate / 5) continue; // in the padding
+                    string why = "";
+                    if (seg.Words == null || seg.Words.Count == 0) why = "no words";
+                    else if (seg.T0 * Rate / 100 > n + Rate / 5) why = "in padding";
+                    else if (TextFilter.Clean(seg.Text, false).Length == 0) why = "empty after cleaning";
+                    else if (TextFilter.IsLikelyInvented(TextFilter.Clean(seg.Text, false), seg.NoSpeech, (seg.T1 - seg.T0) / 100.0, rms)) why = "looks invented";
+                    if (Debug) Log.Info($"[subs]   {baseTime + seg.T0 / 100.0:0.00}–{baseTime + seg.T1 / 100.0:0.00} nsp {seg.NoSpeech:0.00} {(why.Length > 0 ? "DROPPED (" + why + ") " : "")}{seg.Text.Trim()}");
+                    if (why.Length > 0) continue;
                     string text = TextFilter.Clean(seg.Text, false);
-                    if (text.Length == 0) continue;
-                    if (TextFilter.IsLikelyInvented(text, seg.NoSpeech, (seg.T1 - seg.T0) / 100.0, rms)) continue;
                     foreach (var w in seg.Words)
                     {
                         string wt = TextFilter.Clean(w.Text, false);
@@ -388,6 +392,8 @@ namespace Caption.Subtitles
         /// Groups detected speech into windows of up to ~25 s (Whisper reads 30 s at a time), split only in pauses,
         /// with a little padding. Music and silence between them are never sent to Whisper.
         /// </summary>
+        private static readonly bool Debug = Environment.GetEnvironmentVariable("CAPTION_DEBUG") == "1";
+
         private List<(int From, int To)> SpeechWindows(float[] audio)
         {
             const int Frame = 512;
