@@ -19,17 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         model: [small]
-        audio: [stereo]
-        variant: [refine, norefine]
-        include:
-          - variant: refine
-            refine: "1"
-          - variant: norefine
-            refine: "0"
-          - model: large-v3
-            audio: stereo
-            variant: refine
-            refine: "1"
+        audio: [stereo, surround]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v5
@@ -63,7 +53,6 @@ jobs:
           CAPTION_BEAM: "5"
           CAPTION_DEBUG: "1"
           CAPTION_THREADS: "4"
-          CAPTION_REFINE: ${{ matrix.refine }}
         run: |
           $root = (Get-Location).Path
           $film = if ('${{ matrix.audio }}' -eq 'surround') { "$root/test/film.ac3" } else { "$root/test/mix.aif" }
@@ -79,5 +68,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: eval-${{ matrix.model }}-${{ matrix.audio }}-${{ matrix.variant }}
+          name: eval-${{ matrix.model }}-${{ matrix.audio }}
           path: out/
