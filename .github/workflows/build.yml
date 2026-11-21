@@ -85,6 +85,15 @@ jobs:
           if (Test-Path $log) { Write-Host '--- caption.log'; Get-Content $log -Tail 60 }
           if ($p.ExitCode -ne 0) { throw "self-test failed ($($p.ExitCode))" }
 
+      - name: UI smoke test
+        shell: pwsh
+        run: |
+          $root = (Get-Location).Path
+          $out = "$root/test/ui.txt"
+          $p = Start-Process -FilePath "$root/publish/Caption.exe" -PassThru -Wait -ArgumentList @('--uitest', "`"$out`"")
+          if (Test-Path $out) { Get-Content $out } else { Write-Host "no result file" }
+          if ($p.ExitCode -ne 0) { throw "UI test failed ($($p.ExitCode))" }
+
       - name: Checksums
         shell: bash
         run: |

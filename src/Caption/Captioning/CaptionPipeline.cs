@@ -189,29 +189,17 @@ namespace Caption.Captioning
         private float[] DetectSpeech(int frames)
         {
             int n = frames * Frame;
-            // Slide the new audio into the VAD history window.
-            if (n >= VadContext)
-            {
-                Array.Copy(_pending, n - VadContext, _vadHistory, 0, VadContext);
-                _vadHistoryCount = VadContext;
-            }
-            else
-            {
-                int keep = Math.Min(_vadHistoryCount, VadContext - n);
-                Array.Copy(_vadHistory, _vadHistoryCount - keep, _vadHistory, 0, keep);
-                Array.Copy(_pending, 0, _vadHistory, keep, n);
-                _vadHistoryCount = keep + n;
-            }
-
             var result = new float[frames];
             if (_useSilero)
             {
-                int count = _vadHistoryCount / Frame * Frame;
-                int start = _vadHistoryCount - count;
-                var window = new float[count];
-                Array.Copy(_vadHistory, start, window, 0, count);
+                // Window = up to half a second of earlier audio (Silero restarts each call and needs a little
+                // context) + every new frame, so a backlog of any length gets real probabilities.
+                int ctx = Math.Min(_vadHistoryCount, Rate / 2) / Frame * Frame;
+                var window = new float[ctx + n];
+                Array.Copy(_vadHistory, _vadHistoryCount - ctx, window, 0, ctx);
+                Array.Copy(_pending, 0, window, ctx, n);
                 float[]? p = null;
-                try { p = _worker.DetectSpeech(window, count); }
+                try { p = _worker.DetectSpeech(window, window.Length); }
                 catch (WorkerException ex) { Log.WarnOnce("VAD", ex); }
                 if (p != null && p.Length > 0)
                 {
@@ -220,9 +208,11 @@ namespace Caption.Captioning
                         int idx = p.Length - frames + f;
                         result[f] = idx >= 0 ? p[idx] : 0f;
                     }
+                    RememberForVad(n);
                     return result;
                 }
             }
+            RememberForVad(n);
 
             // Energy fallback with an adaptive noise floor.
             for (int f = 0; f < frames; f++)
@@ -234,6 +224,20 @@ namespace Caption.Captioning
                 result[f] = speech ? 1f : 0f;
             }
             return result;
+        }
+
+        private void RememberForVad(int n)
+        {
+            if (n >= VadContext)
+            {
+                Array.Copy(_pending, n - VadContext, _vadHistory, 0, VadContext);
+                _vadHistoryCount = VadContext;
+                return;
+            }
+            int keep = Math.Min(_vadHistoryCount, VadContext - n);
+            Array.Copy(_vadHistory, _vadHistoryCount - keep, _vadHistory, 0, keep);
+            Array.Copy(_pending, 0, _vadHistory, keep, n);
+            _vadHistoryCount = keep + n;
         }
 
         private void OnFrame(float[] frame, bool speech)
@@ -267,6 +271,11 @@ namespace Caption.Captioning
                 FinishLine(_uttCount - trailing, all: true);
                 _active = false;
                 _speechRun = 0;
+            }
+            else if (_uttCount >= _o.MaxLineSeconds * Rate)
+            {
+                // Long unbroken speech (or catching up on a backlog): split here.
+                FinishLine(_uttCount, all: false);
             }
         }
 
