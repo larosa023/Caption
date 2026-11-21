@@ -172,7 +172,7 @@ namespace Caption
                         if (!bar.IsVisible) bar.Show();
                         break;
                     case CaptionState.Paused:
-                        bar.SetPartial("");
+                        bar.SetPartial("", "");
                         bar.ShowNotice("Paused");
                         break;
                     default:
@@ -181,7 +181,7 @@ namespace Caption
                 }
                 UpdateTrayTooltip();
             };
-            _controller.PartialChanged += t => _bar?.SetPartial(t);
+            _controller.LineProgress += (stable, tentative) => _bar?.SetPartial(stable, tentative);
             _controller.LineAdded += line =>
             {
                 bool showOriginal = _settings.CurrentProfile.ShowOriginal;

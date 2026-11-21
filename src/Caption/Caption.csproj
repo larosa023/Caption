@@ -17,7 +17,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
 
     <!-- Bump this and push to main to publish a new release. A version with a "-" (0.2.0-beta.1) is a Beta. -->
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <Product>Caption</Product>
     <Description>Live captions and translation for anything playing on your PC, 100% local.</Description>
     <Copyright>Copyright © 2026 Anthony</Copyright>

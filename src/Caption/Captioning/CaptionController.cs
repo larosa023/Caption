@@ -77,6 +77,8 @@ namespace Caption.Captioning
         public event Action<CaptionLine>? LineAdded;
         public event Action<CaptionLine>? LineUpdated;
         public event Action<string>? PartialChanged;
+        /// <summary>The line being spoken, split into confirmed words and words that may still change.</summary>
+        public event Action<string, string>? LineProgress;
         /// <summary>Something the user should know (shown as a small notice).</summary>
         public event Action<string>? Notice;
         /// <summary>No model yet: the first-run setup should be shown.</summary>
@@ -202,6 +204,8 @@ namespace Caption.Captioning
                 VadThreshold = (float)_settings.VadThreshold,
                 ShowSoundLabels = _settings.ShowSoundLabels,
                 FilterHallucinations = _settings.FilterHallucinations,
+                // Beam search on the GPU: noticeably more accurate and steadier, and still fast there.
+                BeamSize = _loadInfo?.GpuActive == true ? 4 : 1,
             };
         }
 
@@ -209,11 +213,13 @@ namespace Caption.Captioning
         {
             var worker = _worker ?? throw new InvalidOperationException("No speech worker.");
             var pipeline = new CaptionPipeline(worker, _loadInfo?.HasVad == true, Options());
-            pipeline.Partial += text => _ui.InvokeAsync(() =>
+            pipeline.Partial += (stable, tentative) => _ui.InvokeAsync(() =>
             {
                 if (_pipeline != pipeline) return;
+                string text = (stable + " " + tentative).Trim();
                 Partial = text;
                 PartialChanged?.Invoke(text);
+                LineProgress?.Invoke(stable, tentative);
             });
             pipeline.Finished += line => _ui.InvokeAsync(() => { if (_pipeline == pipeline) OnFinished(line); });
             pipeline.Failed += ex => _ui.InvokeAsync(() => { if (_pipeline == pipeline) OnPipelineFailed(ex); });
@@ -240,6 +246,7 @@ namespace Caption.Captioning
             };
             Partial = "";
             PartialChanged?.Invoke("");
+            LineProgress?.Invoke("", "");
             Transcript.Add(line);
             LineAdded?.Invoke(line);
             if (Profile.Translate == "ollama") _ = TranslateAsync(line);
@@ -320,6 +327,7 @@ namespace Caption.Captioning
             SourceStatus = "";
             Partial = "";
             PartialChanged?.Invoke("");
+            LineProgress?.Invoke("", "");
             Progress = -1;
             Native.TrimWorkingSet();
         }
@@ -334,6 +342,7 @@ namespace Caption.Captioning
                 Status = "Paused";
                 Partial = "";
                 PartialChanged?.Invoke("");
+                LineProgress?.Invoke("", "");
             }
             else if (State == CaptionState.Paused)
             {

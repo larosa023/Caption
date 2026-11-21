@@ -36,6 +36,7 @@ namespace Caption.Whisper
         public const int OffTemperature = 116;
         public const int OffTemperatureInc = 128;
         public const int OffNoSpeechThold = 140;
+        public const int OffBeamSize = 148;
         public const int OffVad = 268;
 
         // ----- whisper_context_params (48 bytes) -----

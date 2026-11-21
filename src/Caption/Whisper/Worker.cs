@@ -88,6 +88,7 @@ namespace Caption.Whisper
                                     Final = input.ReadBoolean(),
                                     SuppressNonSpeech = input.ReadBoolean(),
                                     Prompt = input.ReadString(),
+                                    BeamSize = input.ReadInt32(),
                                 };
                                 req.Samples = WorkerProtocol.ReadFloats(input);
                                 req.Count = req.Samples.Length;
@@ -229,6 +230,7 @@ namespace Caption.Whisper
                 _out.Write(req.Final);
                 _out.Write(req.SuppressNonSpeech);
                 _out.Write(req.Prompt ?? "");
+                _out.Write(req.BeamSize);
                 WorkerProtocol.WriteFloats(_out, req.Samples, req.Count);
                 _out.Flush();
                 ReadStatus();

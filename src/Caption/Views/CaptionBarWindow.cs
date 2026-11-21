@@ -159,7 +159,7 @@ namespace Caption.Views
         {
             _lines.Add((text, secondary));
             while (_lines.Count > 200) _lines.RemoveAt(0);
-            _partial = "";
+            _partial = _stable = _tentative = "";
             Render();
         }
 
@@ -177,11 +177,16 @@ namespace Caption.Views
             }
         }
 
-        public void SetPartial(string text)
+        /// <summary>The line being spoken: confirmed words (solid) and newer words that may still change (dimmed).</summary>
+        public void SetPartial(string stable, string tentative)
         {
-            _partial = text ?? "";
+            _stable = stable ?? "";
+            _tentative = tentative ?? "";
+            _partial = (_stable + " " + _tentative).Trim();
             Render();
         }
+
+        private string _stable = "", _tentative = "";
 
         /// <summary>A short status shown in the bar ("Paused", "Listening to Discord").</summary>
         public void ShowNotice(string? text)
@@ -193,7 +198,7 @@ namespace Caption.Views
         public void Clear()
         {
             _lines.Clear();
-            _partial = "";
+            _partial = _stable = _tentative = "";
             _notice = null;
             Render();
         }
@@ -214,25 +219,36 @@ namespace Caption.Views
                         _scrollLines.Children.Add(new TextBlock { Text = secondary, TextWrapping = TextWrapping.Wrap, Opacity = 0.65, FontSize = Math.Max(10, s.FontSize * 0.7), TextAlignment = Align });
                     _scrollLines.Children.Add(new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 6), TextAlignment = Align });
                 }
-                _scrollPartial.Text = _partial.Length > 0 ? _partial : _lines.Count == 0 ? (_notice ?? (_editing ? "Captions appear here" : "")) : "";
-                _scrollPartial.Foreground = _partial.Length > 0 ? dim : MakeTextBrush(0.7);
+                _scrollPartial.Inlines.Clear();
+                if (_partial.Length > 0)
+                {
+                    if (_stable.Length > 0) _scrollPartial.Inlines.Add(new Run(_stable));
+                    if (_tentative.Length > 0) _scrollPartial.Inlines.Add(new Run((_stable.Length > 0 ? " " : "") + _tentative) { Foreground = dim });
+                }
+                else if (_lines.Count == 0)
+                {
+                    _scrollPartial.Inlines.Add(new Run(_notice ?? (_editing ? "Captions appear here" : "")) { Foreground = MakeTextBrush(0.7) });
+                }
                 _scrollPartial.TextAlignment = Align;
                 _scroll.ScrollToEnd();
             }
             else
             {
                 int maxLines = s.Layout == "one" ? 1 : 2;
-                string finalText = _lines.Count > 0 ? _lines[^1].Text : "";
-                // With two lines, keep the line before too, so text doesn't jump when a line finishes.
-                if (maxLines == 2 && _lines.Count > 1 && _partial.Length > 0) finalText = _lines[^1].Text;
-                string partial = _partial;
-                if (finalText.Length == 0 && partial.Length == 0)
+                string finalText;
+                string partial = _tentative;
+                if (_partial.Length > 0)
+                {
+                    // The finished line before stays in front, so text flows on instead of jumping.
+                    finalText = ((_lines.Count > 0 ? _lines[^1].Text + " " : "") + _stable).Trim();
+                }
+                else if (_lines.Count > 0)
+                {
+                    finalText = maxLines == 2 && _lines.Count > 1 ? _lines[^2].Text + " " + _lines[^1].Text : _lines[^1].Text;
+                }
+                else
                 {
                     finalText = _notice ?? (_editing ? "Captions appear here. Drag to move, pull the edges to resize." : "");
-                }
-                else if (maxLines == 2 && partial.Length == 0 && _lines.Count > 1)
-                {
-                    finalText = _lines[^2].Text + " " + _lines[^1].Text;
                 }
                 Fit(ref finalText, ref partial, maxLines);
                 _main.Inlines.Clear();

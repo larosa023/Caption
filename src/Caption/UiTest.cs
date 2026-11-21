@@ -85,7 +85,7 @@ namespace Caption
                     var bar = new CaptionBarWindow(settings);
                     bar.Show();
                     bar.AddLine("And so my fellow Americans, ask not what your country can do for you.", "Original line");
-                    bar.SetPartial("ask what you can do for your country");
+                    bar.SetPartial("ask what you can do", "for your country");
                     await Pump();
                     foreach (var layout in new[] { "one", "two", "scroll" })
                     {

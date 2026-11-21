@@ -11,6 +11,8 @@ namespace Caption.Services
     {
         // ----- General -----
         public bool StartWithWindows { get; set; }
+        /// <summary>Bumped when defaults change, so older settings files get the new ones.</summary>
+        public int SettingsVersion { get; set; }
         public bool FirstRunDone { get; set; }
 
         // ----- Updates -----
@@ -34,9 +36,9 @@ namespace Caption.Services
 
         // ----- Listening -----
         /// <summary>How often the line being spoken is re-read, in ms (lower = snappier, more GPU work).</summary>
-        public int UpdateIntervalMs { get; set; } = 400;
+        public int UpdateIntervalMs { get; set; } = 300;
         /// <summary>Silence that ends a line, in ms.</summary>
-        public int PauseToEndMs { get; set; } = 600;
+        public int PauseToEndMs { get; set; } = 900;
         /// <summary>Longest line before it's committed, in seconds.</summary>
         public int MaxLineSeconds { get; set; } = 8;
         public double VadThreshold { get; set; } = 0.5;
@@ -77,6 +79,13 @@ namespace Caption.Services
 
         internal void Normalize()
         {
+            if (SettingsVersion < 2)
+            {
+                // 0.1.1: captions keep whole sentences together and update faster.
+                if (UpdateIntervalMs == 400) UpdateIntervalMs = 300;
+                if (PauseToEndMs == 600) PauseToEndMs = 900;
+                SettingsVersion = 2;
+            }
             SkipVersions ??= new List<string>();
             Profiles ??= new List<Profile>();
             Profiles.RemoveAll(p => p == null || string.IsNullOrWhiteSpace(p.Id));

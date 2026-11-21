@@ -39,6 +39,8 @@ namespace Caption.Whisper
         /// <summary>Allow temperature fallback (slower, steadier); used for finished lines.</summary>
         public bool Final;
         public bool SuppressNonSpeech = true;
+        /// <summary>1 = greedy; 2+ = beam search with that many beams (steadier, more accurate).</summary>
+        public int BeamSize = 1;
         public string Prompt = "";
         public float[] Samples = Array.Empty<float>();
         public int Count;
@@ -134,7 +136,7 @@ namespace Caption.Whisper
         {
             if (_ctx == IntPtr.Zero) throw new ObjectDisposedException(nameof(WhisperEngine));
             var sw = Stopwatch.StartNew();
-            IntPtr defaults = WhisperNative.whisper_full_default_params_by_ref(0 /* greedy */);
+            IntPtr defaults = WhisperNative.whisper_full_default_params_by_ref(req.BeamSize > 1 ? 1 /* beam search */ : 0 /* greedy */);
             var fp = new WhisperNative.FullParams();
             Buffer.MemoryCopy((void*)defaults, fp.Data, WhisperNative.FullParamsSize, WhisperNative.FullParamsSize);
             WhisperNative.whisper_free_params(defaults);
@@ -156,6 +158,7 @@ namespace Caption.Whisper
             *(float*)(d + WhisperNative.OffTemperature) = 0f;
             *(float*)(d + WhisperNative.OffTemperatureInc) = req.Final ? 0.2f : 0f;
             d[WhisperNative.OffVad] = 0;
+            if (req.BeamSize > 1) *(int*)(d + WhisperNative.OffBeamSize) = Math.Min(req.BeamSize, 8);
 
             byte[] lang = Utf8Z(string.IsNullOrEmpty(req.Language) ? "auto" : req.Language);
             byte[]? prompt = string.IsNullOrWhiteSpace(req.Prompt) ? null : Utf8Z(req.Prompt);

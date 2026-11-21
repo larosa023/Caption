@@ -61,7 +61,7 @@ namespace Caption
                 int partials = 0;
                 using (var pipeline = new CaptionPipeline(worker, info.HasVad, new PipelineOptions()))
                 {
-                    pipeline.Partial += t => { if (t.Length > 0) Interlocked.Increment(ref partials); };
+                    pipeline.Partial += (a, b) => { if (a.Length + b.Length > 0) Interlocked.Increment(ref partials); };
                     pipeline.Finished += f => { lock (finished) finished.Append('[').Append(f.Start.TotalSeconds.ToString("0.0")).Append("s] ").Append(f.Text).Append(' '); };
                     var stream = new float[audio.Length + 16000 * 2]; // + 2 s of silence to end the line
                     Array.Copy(audio, stream, audio.Length);
@@ -70,7 +70,7 @@ namespace Caption
                         var chunk = new float[Math.Min(640, stream.Length - pos)];
                         Array.Copy(stream, pos, chunk, 0, chunk.Length);
                         pipeline.Feed(chunk);
-                        if (pos % (640 * 10) == 0) Thread.Sleep(20);
+                        Thread.Sleep(20); // twice real time, so the reads overlap like they do live
                     }
                     var wait = Stopwatch.StartNew();
                     var idleFor = Stopwatch.StartNew();

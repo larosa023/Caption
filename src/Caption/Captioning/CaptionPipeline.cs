@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using Caption.Services;
 using Caption.Whisper;
@@ -12,16 +13,18 @@ namespace Caption.Captioning
     public sealed class PipelineOptions
     {
         public string Language = "auto";
-        /// <summary>Whisper's own translate task (to English).</summary>
+        /// <summary>Whisper's own translate task (to English). Skipped automatically when the speech is already English.</summary>
         public bool TranslateToEnglish;
         /// <summary>Also produce the source-language text for finished lines (an extra pass).</summary>
         public bool KeepOriginal;
-        public int UpdateIntervalMs = 400;
-        public int PauseToEndMs = 600;
+        public int UpdateIntervalMs = 300;
+        public int PauseToEndMs = 900;
         public int MaxLineSeconds = 8;
         public float VadThreshold = 0.5f;
         public bool ShowSoundLabels;
         public bool FilterHallucinations = true;
+        /// <summary>Beam search width (1 = greedy). Beams make each read steadier and more accurate.</summary>
+        public int BeamSize = 1;
     }
 
     public sealed class FinishedLine
@@ -33,16 +36,28 @@ namespace Caption.Captioning
     }
 
     /// <summary>
-    /// Turns a 16 kHz audio stream into captions. Voice activity detection finds speech; while someone talks,
-    /// the line so far is re-read every UpdateIntervalMs and shown in place (and corrected as more audio arrives);
-    /// a pause (or a long line) finishes it with a final, steadier pass.
+    /// Streaming captions with "local agreement" (the whisper_streaming approach): the audio since the last finished
+    /// sentence is re-read every UpdateIntervalMs with the recent text as context, and words are confirmed once two
+    /// reads in a row agree on them. Confirmed words show solid right away; the newest, still-changing words show
+    /// dimmed. Whisper always hears whole sentences (not fragments cut at every short pause), which is what makes it
+    /// accurate, while the screen stays only one read behind the speaker.
     /// </summary>
     public sealed class CaptionPipeline : IDisposable
     {
         private const int Rate = 16000;
         private const int Frame = 512;             // 32 ms, Silero's frame
-        private const int PrerollFrames = 10;      // 320 ms kept from before speech starts
-        private const int VadContext = Rate;       // Silero re-reads the last second each time (its state resets per call)
+        private const int PrerollFrames = 8;       // 256 ms kept from before speech starts
+        private const int VadContext = Rate;
+        private const int MaxBufferSeconds = 18;   // whisper's window is 30 s; keep well inside it
+
+        private sealed class Word
+        {
+            public string Text = "";
+            public string Key = "";
+            public long Start;   // absolute sample index (approximate, from its segment)
+            public long End;
+            public bool SentenceEnd;
+        }
 
         private readonly WorkerClient _worker;
         private readonly bool _useSilero;
@@ -62,27 +77,38 @@ namespace Caption.Captioning
         private readonly float[] _vadHistory = new float[VadContext];
         private int _vadHistoryCount;
 
+        // recent audio (absolute indexes) for the optional "original" pass
+        private readonly float[] _ring = new float[Rate * 60];
+
         // speech state
         private readonly Queue<float[]> _preroll = new();
         private bool _active;
         private int _speechRun;
         private int _silenceRun;
-        private float[] _utt = new float[Rate * 30];
-        private int _uttCount;
-        private long _uttStart;                     // sample index where the current line's audio starts
+        private float[] _buf = new float[Rate * 32];  // audio not yet trimmed away
+        private int _bufCount;
+        private long _bufStart;                     // absolute sample index of _buf[0]
         private int _sinceInference;
-        private string? _lockedLanguage;
-        private string _lastText = "";
-        private string _lastPartial = "";
+
+        // agreement state
+        private List<Word> _prev = new();           // the previous read's words for the buffer
+        private int _committed;                     // how many of them are confirmed
+        private readonly List<Word> _line = new();  // confirmed words of the line on screen
+        private string _context = "";               // recent finished text, fed back as the prompt
+        private string? _language;                  // language locked for this stretch of speech
+        private string _lastStable = "", _lastTentative = "";
+        // per segment of the last read: word count, end time (10 ms units), ends a sentence
+        private List<(int Words, long T1, bool Ends)> _segs = new();
 
         // energy VAD fallback
         private float _noiseFloor = 0.003f;
 
-        public event Action<string>? Partial;             // "" clears
+        /// <summary>The line being spoken: confirmed words, and newer words that may still change. Both "" clears.</summary>
+        public event Action<string, string>? Partial;
         public event Action<FinishedLine>? Finished;
         public event Action<Exception>? Failed;
 
-        /// <summary>How long the last read of the line took (GPU/CPU time).</summary>
+        /// <summary>How long the last read took (GPU/CPU time).</summary>
         public int LastInferenceMs { get; private set; }
         /// <summary>From the newest audio arriving to its text being shown.</summary>
         public int LastDelayMs { get; private set; }
@@ -135,7 +161,7 @@ namespace Caption.Captioning
                     if (_resetRequested)
                     {
                         _resetRequested = false;
-                        ResetLine(clearPartial: true);
+                        Reset(clearScreen: true);
                     }
                     bool any = false;
                     while (_queue.TryDequeue(out var item))
@@ -168,14 +194,15 @@ namespace Caption.Captioning
         {
             int frames = _pendingCount / Frame;
             if (frames == 0) return;
-            // Silero is asked every ~96 ms of audio at most.
-            if (_useSilero && frames < 3 && _active == false && _pendingCount < Frame * 3) return;
+            // While idle, Silero is asked every ~96 ms of audio at most.
+            if (_useSilero && frames < 3 && !_active) return;
 
             float[] probs = DetectSpeech(frames);
             for (int f = 0; f < frames; f++)
             {
                 var frame = new float[Frame];
                 Array.Copy(_pending, f * Frame, frame, 0, Frame);
+                for (int i = 0; i < Frame; i++) _ring[(_consumed + i) % _ring.Length] = frame[i];
                 OnFrame(frame, probs[f] >= _o.VadThreshold);
                 _consumed += Frame;
             }
@@ -183,7 +210,9 @@ namespace Caption.Captioning
             Array.Copy(_pending, used, _pending, 0, _pendingCount - used);
             _pendingCount -= used;
 
-            if (_active) MaybeInfer();
+            // One read per batch of audio: however far behind we were, the text catches up in one step.
+            if (_active && _bufCount >= Rate / 2 && _sinceInference >= _o.UpdateIntervalMs * Rate / 1000)
+                Step();
         }
 
         private float[] DetectSpeech(int frames)
@@ -251,178 +280,204 @@ namespace Caption.Captioning
                 {
                     _active = true;
                     _silenceRun = 0;
-                    _uttCount = 0;
-                    _uttStart = _consumed - (long)(_preroll.Count - 1) * Frame;
-                    foreach (var f in _preroll) AppendUtt(f);
+                    _bufCount = 0;
+                    _bufStart = _consumed - (long)(_preroll.Count - 1) * Frame;
+                    foreach (var f in _preroll) AppendBuf(f);
                     _preroll.Clear();
-                    _sinceInference = _uttCount;
+                    _sinceInference = _bufCount;
                 }
                 return;
             }
 
-            AppendUtt(frame);
+            AppendBuf(frame);
             _sinceInference += Frame;
             _silenceRun = speech ? 0 : _silenceRun + 1;
 
             if (_silenceRun * 32 >= _o.PauseToEndMs)
             {
-                // Pause: finish the line (keep ~200 ms of the trailing silence for natural word endings).
-                int trailing = Math.Max(0, (_silenceRun - 6) * Frame);
-                FinishLine(_uttCount - trailing, all: true);
+                // The speaker paused: settle everything heard so far.
+                Flush();
                 _active = false;
                 _speechRun = 0;
+                _preroll.Clear();
             }
-            else if (_uttCount >= _o.MaxLineSeconds * Rate)
+            else if (_bufCount >= MaxBufferSeconds * Rate)
             {
-                // Long unbroken speech (or catching up on a backlog): split here.
-                FinishLine(_uttCount, all: false);
+                // Long stretch with no sentence end Whisper agreed on: settle it and start fresh.
+                Flush();
             }
         }
 
-        private void AppendUtt(float[] frame)
+        private void AppendBuf(float[] frame)
         {
-            if (_uttCount + frame.Length > _utt.Length) Array.Resize(ref _utt, _utt.Length * 2);
-            Array.Copy(frame, 0, _utt, _uttCount, frame.Length);
-            _uttCount += frame.Length;
+            if (_bufCount + frame.Length > _buf.Length) Array.Resize(ref _buf, _buf.Length * 2);
+            Array.Copy(frame, 0, _buf, _bufCount, frame.Length);
+            _bufCount += frame.Length;
         }
 
-        private void MaybeInfer()
+        // ---------------------------------------------------------------- agreement
+
+        /// <summary>Re-read the buffer, confirm the words two reads agree on, show the rest as tentative.</summary>
+        private void Step()
         {
-            if (!_active) return;
-            double seconds = _uttCount / (double)Rate;
-            if (seconds >= _o.MaxLineSeconds)
+            _sinceInference = 0;
+            var res = Run(_bufCount, final: false);
+            if (res == null) return;
+            var words = ToWords(res, _bufCount);
+
+            int agree = 0;
+            while (agree < words.Count && agree < _prev.Count && words[agree].Key == _prev[agree].Key) agree++;
+            if (agree > _committed)
             {
-                FinishLine(_uttCount, all: false);
-                return;
+                for (int i = _committed; i < agree; i++) Confirm(words[i]);
+                _committed = agree;
             }
-            if (seconds >= 0.6 && _sinceInference >= _o.UpdateIntervalMs * Rate / 1000)
+            _prev = words;
+            TrimBuffer();
+            ShowProgress(words.Skip(_committed));
+        }
+
+        /// <summary>Pause or full buffer: one final, careful read; everything it says is confirmed.</summary>
+        private void Flush()
+        {
+            int count = _bufCount;
+            // Drop most of the trailing silence (keep ~200 ms for word endings).
+            int trailing = Math.Max(0, (_silenceRun - 6) * Frame);
+            count = Math.Max(0, count - trailing);
+            if (count >= Rate / 4)
             {
-                _sinceInference = 0;
-                var res = Run(_uttCount, final: false, translate: _o.TranslateToEnglish);
-                if (res == null) return;
-                string text = Join(res.Segments, _uttCount);
-                if (_o.FilterHallucinations && TextFilter.IsLikelyInvented(text, MinNoSpeech(res), seconds, Rms(_utt, 0, _uttCount)))
-                    text = "";
-                if (text != _lastPartial)
+                var res = Run(count, final: true);
+                if (res != null)
                 {
-                    _lastPartial = text;
-                    LastDelayMs = (int)((Stopwatch.GetTimestamp() - _lastSampleTicks) * 1000 / Stopwatch.Frequency) + 100;
-                    Partial?.Invoke(text);
+                    var words = ToWords(res, count);
+                    // Keep words already confirmed; take the rest from the final read.
+                    int same = 0;
+                    while (same < words.Count && same < _committed && words[same].Key == _prev[same].Key) same++;
+                    int from = same == _committed ? _committed : Math.Min(_committed, words.Count);
+                    for (int i = from; i < words.Count; i++) Confirm(words[i]);
                 }
             }
+            FinishLine();
+            Reset(clearScreen: false);
+        }
+
+        private void Confirm(Word w)
+        {
+            _line.Add(w);
+            int chars = _line.Sum(x => x.Text.Length + 1);
+            // Lines end at sentence ends once they're a reasonable length, or at a word boundary if they run long.
+            double seconds = (w.End - _line[0].Start) / (double)Rate;
+            if ((w.SentenceEnd && (chars >= 40 || seconds >= 3)) || chars >= 150 || seconds >= _o.MaxLineSeconds + 4)
+                FinishLine();
+        }
+
+        private void FinishLine()
+        {
+            if (_line.Count == 0) return;
+            string text = TextFilter.CollapseRepeats(string.Join(' ', _line.Select(w => w.Text)));
+            long start = _line[0].Start, end = Math.Max(_line[^1].End, start + Rate / 2);
+            _line.Clear();
+            if (!text.Any(char.IsLetterOrDigit)) return;
+            string? original = null;
+            if (_o.TranslateToEnglish && _o.KeepOriginal && DetectedLanguage != "en") original = Original(start, end);
+            _context = (_context + " " + text).Trim();
+            if (_context.Length > 220) _context = _context.Substring(_context.Length - 220);
+            LastDelayMs = Delay();
+            Finished?.Invoke(new FinishedLine
+            {
+                Text = text,
+                Original = original,
+                Language = DetectedLanguage,
+                Start = TimeSpan.FromSeconds(start / (double)Rate),
+                End = TimeSpan.FromSeconds(end / (double)Rate),
+            });
+            _lastStable = "";
         }
 
         /// <summary>
-        /// Finishes the line. With all=false (line too long), everything except the last sentence is committed and
-        /// the rest keeps going as the next line.
+        /// Drop audio Whisper is done with: everything up to the end of the last confirmed segment that ends a sentence
+        /// (or, on a long buffer, any fully confirmed segment). Its text becomes context for the next reads.
         /// </summary>
-        private void FinishLine(int count, bool all)
+        private void TrimBuffer()
         {
-            count = Math.Clamp(count, 0, _uttCount);
-            if (count < Rate / 4)
+            int wordIndex = 0, cutWords = -1;
+            long cutT1 = 0;
+            bool longBuffer = _bufCount > 10 * Rate;
+            foreach (var seg in _segs)
             {
-                ResetLine(clearPartial: true);
-                return;
+                wordIndex += seg.Words;
+                if (wordIndex > _committed) break;
+                if (seg.Ends || longBuffer) { cutWords = wordIndex; cutT1 = seg.T1; }
             }
-            var res = Run(count, final: true, translate: _o.TranslateToEnglish);
-            if (res == null) { ResetLine(clearPartial: true); return; }
-
-            int commitSamples = count;
-            List<Segment> segs = res.Segments;
-            if (!all && segs.Count > 1)
-            {
-                // Keep the last segment for the next line; it may still be mid-sentence.
-                var last = segs[^1];
-                int cut = (int)Math.Clamp(last.T0 * Rate / 100, Rate / 2, count);
-                segs = segs.Take(segs.Count - 1).ToList();
-                commitSamples = cut;
-            }
-
-            string text = Join(segs, commitSamples);
-            double seconds = commitSamples / (double)Rate;
-            if (_o.FilterHallucinations && TextFilter.IsLikelyInvented(text, MinNoSpeech(res), seconds, Rms(_utt, 0, commitSamples)))
-                text = "";
-
-            if (text.Length > 0)
-            {
-                string? original = null;
-                if (_o.TranslateToEnglish && _o.KeepOriginal && !string.Equals(DetectedLanguage, "en", StringComparison.Ordinal))
-                {
-                    var orig = Run(commitSamples, final: true, translate: false);
-                    if (orig != null) original = Join(orig.Segments, commitSamples);
-                    if (string.IsNullOrWhiteSpace(original) || original == text) original = null;
-                }
-                var line = new FinishedLine
-                {
-                    Text = text,
-                    Original = original,
-                    Language = DetectedLanguage,
-                    Start = TimeSpan.FromSeconds(_uttStart / (double)Rate),
-                    End = TimeSpan.FromSeconds((_uttStart + commitSamples) / (double)Rate),
-                };
-                if (!_o.TranslateToEnglish) _lastText = text;
-                LastDelayMs = (int)((Stopwatch.GetTimestamp() - _lastSampleTicks) * 1000 / Stopwatch.Frequency) + 100;
-                _lastPartial = "";
-                Finished?.Invoke(line);
-            }
-
-            if (all)
-            {
-                ResetLine(clearPartial: text.Length == 0);
-            }
-            else if (commitSamples >= _uttCount)
-            {
-                // Long line committed whole while the speaker keeps going: start the next line right here.
-                _uttStart += _uttCount;
-                _uttCount = 0;
-                _sinceInference = 0;
-                if (text.Length == 0 && _lastPartial.Length > 0) { _lastPartial = ""; Partial?.Invoke(""); }
-            }
-            else
-            {
-                // Carry the unfinished tail into the next line.
-                int rest = _uttCount - commitSamples;
-                Array.Copy(_utt, commitSamples, _utt, 0, rest);
-                _uttCount = rest;
-                _uttStart += commitSamples;
-                _sinceInference = _o.UpdateIntervalMs * Rate / 1000; // re-read the tail right away
-                if (text.Length == 0) { _lastPartial = ""; Partial?.Invoke(""); }
-            }
+            if (cutWords <= 0) return;
+            int cut = (int)Math.Clamp(cutT1 * Rate / 100, 0, _bufCount);
+            if (cut < Rate / 2 || cut > _bufCount - Rate / 4) return; // leave a little audio, and don't trim tiny bits
+            Array.Copy(_buf, cut, _buf, 0, _bufCount - cut);
+            _bufCount -= cut;
+            _bufStart += cut;
+            _prev = _prev.Skip(cutWords).ToList();
+            _committed = Math.Max(0, _committed - cutWords);
         }
 
-        private void ResetLine(bool clearPartial)
+        private void ShowProgress(IEnumerable<Word> tentative)
+        {
+            string stable = string.Join(' ', _line.Select(w => w.Text));
+            string tent = string.Join(' ', tentative.Select(w => w.Text));
+            if (stable == _lastStable && tent == _lastTentative) return;
+            _lastStable = stable;
+            _lastTentative = tent;
+            LastDelayMs = Delay();
+            Partial?.Invoke(stable, tent);
+        }
+
+        private void Reset(bool clearScreen)
         {
             _active = false;
-            _uttCount = 0;
+            _bufCount = 0;
             _speechRun = 0;
             _silenceRun = 0;
-            _lockedLanguage = null;
-            if (clearPartial && _lastPartial.Length > 0)
+            _prev = new List<Word>();
+            _committed = 0;
+            _language = null;
+            if (clearScreen) _line.Clear();
+            if (_lastStable.Length > 0 || _lastTentative.Length > 0 || clearScreen)
             {
-                _lastPartial = "";
-                Partial?.Invoke("");
+                _lastStable = "";
+                _lastTentative = "";
+                Partial?.Invoke("", "");
             }
         }
 
-        private TranscribeResult? Run(int count, bool final, bool translate)
+        private int Delay() => (int)((Stopwatch.GetTimestamp() - _lastSampleTicks) * 1000 / Stopwatch.Frequency) + 100;
+
+        // ---------------------------------------------------------------- whisper
+
+        private TranscribeResult? Run(int count, bool final)
         {
             // Whisper does better with a little padding on very short audio.
             int padded = Math.Max(count, Rate + Rate / 10);
             var samples = new float[padded];
-            Array.Copy(_utt, samples, count);
-            string lang = _o.Language != "auto" ? _o.Language : _lockedLanguage ?? "auto";
+            Array.Copy(_buf, samples, count);
+            string lang = _o.Language != "auto" ? _o.Language : _language ?? "auto";
+            // Translate only speech that isn't English already (and translating English hurts accuracy).
+            string known = lang != "auto" ? lang : DetectedLanguage;
+            bool translate = _o.TranslateToEnglish && known.Length > 0 && known != "en";
+            return RunOn(samples, padded, lang, translate, final);
+        }
+
+        private TranscribeResult? RunOn(float[] samples, int count, string lang, bool translate, bool final)
+        {
             var req = new TranscribeRequest
             {
                 Language = lang,
                 Translate = translate,
                 Final = final,
                 SuppressNonSpeech = !_o.ShowSoundLabels,
-                // Carry the previous sentence as context, which helps casing and punctuation.
-                Prompt = !translate && _lastText.Length > 0 && (lang == "auto" || lang == DetectedLanguage)
-                    ? (_lastText.Length > 160 ? _lastText.Substring(_lastText.Length - 160) : _lastText)
-                    : "",
+                BeamSize = _o.BeamSize,
+                // Recent finished text as context: helps names, casing and punctuation stay consistent.
+                Prompt = translate ? "" : _context,
                 Samples = samples,
-                Count = padded,
+                Count = count,
             };
             try
             {
@@ -430,9 +485,10 @@ namespace Caption.Captioning
                 LastInferenceMs = res.Milliseconds;
                 if (!string.IsNullOrEmpty(res.Language))
                 {
-                    DetectedLanguage = res.Language;
-                    // Once a line has a second and a half of audio, keep its language steady.
-                    if (_lockedLanguage == null && count >= Rate * 3 / 2 && _o.Language == "auto") _lockedLanguage = res.Language;
+                    if (lang == "auto") DetectedLanguage = res.Language;
+                    else DetectedLanguage = lang;
+                    // Once there's a second and a half of speech, keep its language steady until the next pause.
+                    if (_language == null && count >= Rate * 3 / 2 && _o.Language == "auto") _language = res.Language;
                 }
                 return res;
             }
@@ -443,14 +499,66 @@ namespace Caption.Captioning
             }
         }
 
-        private string Join(List<Segment> segs, int samples)
+        private string? Original(long start, long end)
         {
-            double limit = samples / (double)Rate * 100 + 50; // ignore segments Whisper placed in the padding
-            var parts = segs.Where(s => s.T0 <= limit).Select(s => s.Text);
-            return TextFilter.Clean(string.Concat(parts), _o.ShowSoundLabels);
+            int n = (int)Math.Min(end - start, _ring.Length);
+            if (n <= Rate / 4 || _consumed - start > _ring.Length) return null;
+            var samples = new float[Math.Max(n, Rate + Rate / 10)];
+            for (int i = 0; i < n; i++) samples[i] = _ring[(start + i) % _ring.Length];
+            var res = RunOn(samples, samples.Length, DetectedLanguage.Length > 0 ? DetectedLanguage : "auto", false, true);
+            string? text = res == null ? null : Clean(res.Text);
+            return string.IsNullOrWhiteSpace(text) ? null : text;
         }
 
-        private static float MinNoSpeech(TranscribeResult r) => r.Segments.Count == 0 ? 1f : r.Segments.Min(s => s.NoSpeech);
+        private string Clean(string text) => TextFilter.Clean(text, _o.ShowSoundLabels);
+
+        private static List<string> Split(string s) => s.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+
+        /// <summary>The read as words, dropping invented lines and anything Whisper placed in the padding.</summary>
+        private List<Word> ToWords(TranscribeResult res, int count)
+        {
+            var list = new List<Word>();
+            _segs = new List<(int, long, bool)>();
+            double limit = count / (double)Rate * 100 + 30;
+            float rms = Rms(_buf, 0, count);
+            foreach (var seg in res.Segments)
+            {
+                if (seg.T0 > limit) continue;
+                string text = Clean(seg.Text);
+                if (text.Length == 0) continue;
+                double secs = Math.Max(0.1, (seg.T1 - seg.T0) / 100.0);
+                if (_o.FilterHallucinations && TextFilter.IsLikelyInvented(text, seg.NoSpeech, secs, rms)) continue;
+                var ws = Split(text);
+                if (ws.Count == 0) continue;
+                char endChar = text[^1];
+                _segs.Add((ws.Count, seg.T1, endChar is '.' or '?' or '!' or '。' or '？' or '！'));
+                long s0 = _bufStart + seg.T0 * Rate / 100, s1 = _bufStart + seg.T1 * Rate / 100;
+                for (int i = 0; i < ws.Count; i++)
+                {
+                    // Spread the segment's time across its words (good enough for .srt timing).
+                    long a = s0 + (s1 - s0) * i / ws.Count, b = s0 + (s1 - s0) * (i + 1) / ws.Count;
+                    string w = ws[i];
+                    char last = w[^1];
+                    list.Add(new Word
+                    {
+                        Text = w,
+                        Key = Key(w),
+                        Start = a,
+                        End = b,
+                        SentenceEnd = last is '.' or '?' or '!' or '。' or '？' or '！',
+                    });
+                }
+            }
+            return list;
+        }
+
+        /// <summary>Compare words ignoring case and punctuation, so "you," and "you" agree.</summary>
+        private static string Key(string w)
+        {
+            var sb = new StringBuilder(w.Length);
+            foreach (char c in w) if (char.IsLetterOrDigit(c)) sb.Append(char.ToLowerInvariant(c));
+            return sb.Length > 0 ? sb.ToString() : w;
+        }
 
         private static float Rms(float[] a, int offset, int count)
         {
