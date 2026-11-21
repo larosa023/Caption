@@ -1,4 +1,8 @@
-## Caption 0.2.0
+## Caption 0.2.1
+
+- **Updates arrive right away.** Caption now asks GitHub directly for new versions, so a fresh release is never missed.
+
+### From 0.2.0
 
 Built for movies and shows.
 

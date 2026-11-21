@@ -153,6 +153,7 @@ namespace Caption.Services
                 if (best == null)
                 {
                     Status = $"You're up to date (checked {DateTime.Now:h:mm tt}).";
+                    Log.Info($"Update check: up to date ({releases.Count} releases seen)");
                     return;
                 }
 
@@ -213,37 +214,33 @@ namespace Caption.Services
 
         private async Task<List<ReleaseInfo>> GetReleasesAsync(CancellationToken ct)
         {
-            // 1) The suite's release index (no API rate limit), if it's fresh and knows about Caption.
+            // 1) The GitHub API: always current.
             try
             {
-                using var resp = await Downloader.Client.GetAsync(IndexUrl, ct);
-                if (resp.IsSuccessStatusCode)
+                using var req = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{Repo}/releases?per_page=15");
+                req.Headers.Accept.ParseAdd("application/vnd.github+json");
+                req.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
+                using var api = await Downloader.Client.SendAsync(req, ct);
+                if (api.IsSuccessStatusCode)
                 {
-                    using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
-                    long generated = doc.RootElement.TryGetProperty("generated", out var g) && g.TryGetInt64(out long gv) ? gv : 0;
-                    bool fresh = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - generated < 24 * 3600;
-                    if (fresh && doc.RootElement.TryGetProperty("repos", out var repos) &&
-                        repos.TryGetProperty(Repo.ToLowerInvariant(), out var arr) && arr.ValueKind == JsonValueKind.Array)
-                    {
-                        var list = ParseReleases(arr);
-                        // The index can lag a few minutes; only trust it if it has something.
-                        if (list.Count > 0) return list;
-                    }
+                    using var apiDoc = JsonDocument.Parse(await api.Content.ReadAsStringAsync(ct));
+                    return ParseReleases(apiDoc.RootElement);
                 }
+                Log.Info($"Release API: HTTP {(int)api.StatusCode}");
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                Log.Info("Release index: " + ex.Message);
+                Log.Info("Release API: " + ex.Message);
             }
 
-            // 2) The GitHub API directly.
-            using var req = new HttpRequestMessage(HttpMethod.Get, $"https://api.github.com/repos/{Repo}/releases?per_page=15");
-            req.Headers.Accept.ParseAdd("application/vnd.github+json");
-            req.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
-            using var api = await Downloader.Client.SendAsync(req, ct);
-            api.EnsureSuccessStatusCode();
-            using var apiDoc = JsonDocument.Parse(await api.Content.ReadAsStringAsync(ct));
-            return ParseReleases(apiDoc.RootElement);
+            // 2) The suite's release index (no rate limit, but can lag a few minutes behind a new release).
+            using var resp = await Downloader.Client.GetAsync(IndexUrl, ct);
+            resp.EnsureSuccessStatusCode();
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            if (doc.RootElement.TryGetProperty("repos", out var repos) &&
+                repos.TryGetProperty(Repo.ToLowerInvariant(), out var arr) && arr.ValueKind == JsonValueKind.Array)
+                return ParseReleases(arr);
+            return new List<ReleaseInfo>();
         }
 
         private static List<ReleaseInfo> ParseReleases(JsonElement array)
