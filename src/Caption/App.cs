@@ -40,6 +40,9 @@ namespace Caption
         private EventWaitHandle? _showSignal, _quitSignal;
         private RegisteredWaitHandle? _showWait, _quitWait;
         private bool _cleanedUp;
+        private Caption.Subtitles.SubtitleService? _subs;
+        private Caption.Subtitles.SubtitleServer? _subServer;
+        private bool _autoPaused;
 
         public App(bool startHidden, int afterUpdatePid, string? previousVersion, Mutex? mutex)
         {
@@ -92,6 +95,14 @@ namespace Caption
             WireController();
             CreateTray();
             CreateHotkeys();
+
+            // Subtitles for apps like Ripple (localhost API).
+            _subs = new Caption.Subtitles.SubtitleService(_settings);
+            _subServer = new Caption.Subtitles.SubtitleServer(_subs);
+            _vm.AttachSubtitles(_subs, _subServer);
+            _subs.Changed += () => Dispatcher.InvokeAsync(OnSubtitleJobChanged);
+            if (_settings.SubtitleServer) _subServer.Start();
+            _vm.SubtitleServerToggled += (_, _) => { if (_settings.SubtitleServer) _subServer.Start(); else { _subServer.Stop(); _subs.Stop(); } };
 
             _updater.Ready += (_, _) => ShowUpdatePrompt();
             _updater.StartAutomaticChecks();
@@ -201,6 +212,29 @@ namespace Caption
                 _vm.Page = "home";
                 _window.ShowFront();
             };
+        }
+
+        /// <summary>While an app shows Caption's subtitles, live captions step aside (no double subtitles).</summary>
+        private void OnSubtitleJobChanged()
+        {
+            var job = _subs?.Current;
+            bool active = job != null && job.State != "error";
+            if (active && _controller.State == CaptionState.Running)
+            {
+                _controller.TogglePause();
+                _autoPaused = true;
+                _bar?.Hide();
+            }
+            else if (!active && _autoPaused)
+            {
+                _autoPaused = false;
+                if (_controller.State == CaptionState.Paused)
+                {
+                    _controller.TogglePause();
+                    _bar?.Show();
+                }
+            }
+            _vm.OnSubtitleStatus();
         }
 
         private void ToggleCaptions()
@@ -393,6 +427,8 @@ namespace Caption
         {
             _controller.Stop();
             _controller.Dispose();
+            try { _subServer?.Stop(); } catch { }
+            try { _subs?.Stop(); } catch { }
             _window.SaveState();
             _window.Hide();
             _bar?.Hide();
@@ -411,6 +447,7 @@ namespace Caption
         private void RestoreAfterFailedHandoff()
         {
             try { _mutex = new Mutex(true, MutexName, out _); } catch { }
+            if (_settings.SubtitleServer) _subServer?.Start();
             CreateTray();
             CreateHotkeys();
             _window.ShowFront();
@@ -433,6 +470,8 @@ namespace Caption
             _cleanedUp = true;
             try { _window?.SaveState(); } catch { }
             try { _controller?.Dispose(); } catch { }
+            try { _subServer?.Dispose(); } catch { }
+            try { _subs?.Dispose(); } catch { }
             try { _tray?.Dispose(); } catch { }
             HotkeyRecorder.RecordingStarted -= OnRecordingStarted;
             HotkeyRecorder.RecordingStopped -= OnRecordingStopped;

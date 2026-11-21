@@ -166,6 +166,55 @@ namespace Caption.ViewModels
         public event EventHandler? HotkeysChanged;
         public event EventHandler? BarStyleChanged;
         public event EventHandler? ProfilesChanged;
+        public event EventHandler? SubtitleServerToggled;
+
+        // ================================================================ subtitles for apps
+
+        private Caption.Subtitles.SubtitleService? _subs;
+        private Caption.Subtitles.SubtitleServer? _subServer;
+
+        public void AttachSubtitles(Caption.Subtitles.SubtitleService subs, Caption.Subtitles.SubtitleServer server)
+        {
+            _subs = subs;
+            _subServer = server;
+            OnSubtitleStatus();
+        }
+
+        public void OnSubtitleStatus()
+        {
+            OnPropertyChanged(nameof(SubtitleJobStatus));
+            OnPropertyChanged(nameof(SubtitleServerStatus));
+        }
+
+        public string SubtitleJobStatus => _subs?.Status ?? "";
+
+        public string SubtitleServerStatus
+        {
+            get
+            {
+                if (!_s.SubtitleServer) return "Off";
+                if (_subServer is { Running: false } && _subServer.Error.Length > 0) return _subServer.Error;
+                var m = _subs?.PickModel();
+                string model = m == null ? "no model downloaded yet" : "using " + m.Name;
+                string ff = Caption.Subtitles.Ffmpeg.IsInstalled ? "" : $" · downloads FFmpeg ({DownloadProgress.Format(Caption.Subtitles.Ffmpeg.ApproxSize)}) the first time";
+                return $"Ready for Ripple · {model}{ff}";
+            }
+        }
+
+        public bool SubtitleServerEnabled
+        {
+            get => _s.SubtitleServer;
+            set { _s.SubtitleServer = value; Save(); OnPropertyChanged(); SubtitleServerToggled?.Invoke(this, EventArgs.Empty); OnSubtitleStatus(); }
+        }
+
+        public List<Choice> SubtitleModelChoices { get; } =
+            new[] { new Choice("", "Most accurate downloaded") }.Concat(ModelCatalog.Models.Select(m => new Choice(m.Id, m.Name))).ToList();
+
+        public string SubtitleModel
+        {
+            get => _s.SubtitleModel;
+            set { _s.SubtitleModel = value ?? ""; Save(); OnPropertyChanged(); OnSubtitleStatus(); }
+        }
 
         public void Save() => SettingsStore.Save(_s);
 

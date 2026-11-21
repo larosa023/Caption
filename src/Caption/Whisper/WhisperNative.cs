@@ -37,6 +37,27 @@ namespace Caption.Whisper
         public const int OffTemperatureInc = 128;
         public const int OffNoSpeechThold = 140;
         public const int OffBeamSize = 148;
+        public const int OffMaxLen = 40;
+        public const int OffSplitOnWord = 44;
+
+        // ----- whisper_context_params: DTW word timing -----
+        public const int OffDtwTokenTimestamps = 8;
+        public const int OffDtwAheadsPreset = 12;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct TokenData
+        {
+            public int Id;
+            public int Tid;
+            public float P;
+            public float PLog;
+            public float Pt;
+            public float PtSum;
+            public long T0;
+            public long T1;
+            public long TDtw;
+            public float VLen;
+        }
         public const int OffVad = 268;
 
         // ----- whisper_context_params (48 bytes) -----
@@ -100,6 +121,18 @@ namespace Caption.Whisper
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         public static extern int whisper_full_lang_id(IntPtr ctx);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int whisper_full_n_tokens(IntPtr ctx, int segment);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        public static extern TokenData whisper_full_get_token_data(IntPtr ctx, int segment, int token);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        public static extern IntPtr whisper_full_get_token_text(IntPtr ctx, int segment, int token);
+
+        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int whisper_token_eot(IntPtr ctx);
 
         [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr whisper_lang_str(int id);

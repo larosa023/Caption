@@ -46,6 +46,12 @@ namespace Caption.Services
         public bool FilterHallucinations { get; set; } = true;
         public bool AutoSaveTranscripts { get; set; }
 
+        // ----- Subtitles for apps (Ripple) -----
+        /// <summary>Let apps on this PC ask Caption for subtitles (localhost only).</summary>
+        public bool SubtitleServer { get; set; } = true;
+        /// <summary>Model for app subtitles; "" = the most accurate one downloaded.</summary>
+        public string SubtitleModel { get; set; } = "";
+
         // ----- Ollama -----
         public string OllamaUrl { get; set; } = "http://localhost:11434";
         public string OllamaModel { get; set; } = "";

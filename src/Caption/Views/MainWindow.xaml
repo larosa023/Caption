@@ -195,6 +195,8 @@
                                         <TextBlock Text="{Binding Controller.Status}" Style="{StaticResource Sub}" FontSize="13" Margin="0,3,0,0" />
                                         <TextBlock Text="{Binding Controller.SourceStatus}" Style="{StaticResource Sub}" Margin="0,2,0,0"
                                                    Visibility="{Binding Controller.SourceStatus, Converter={StaticResource NullVis}}" />
+                                        <TextBlock Text="{Binding SubtitleJobStatus}" Style="{StaticResource Sub}" Margin="0,2,0,0" Foreground="{DynamicResource AccentBrush}"
+                                                   Visibility="{Binding SubtitleJobStatus, Converter={StaticResource NullVis}}" />
                                         <TextBlock Style="{StaticResource Sub}" Margin="0,2,0,0" Foreground="{DynamicResource FaintBrush}">
                                             <Run Text="{Binding Controller.EngineText, Mode=OneWay}" /><Run Text="  " /><Run Text="{Binding Controller.Stats, Mode=OneWay}" />
                                         </TextBlock>
@@ -841,6 +843,28 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
                         <TextBlock Text="{Binding ModelsDiskText}" Style="{StaticResource Sub}" Margin="4,2,0,0" />
+
+                        <TextBlock Text="Subtitles for Ripple" Style="{StaticResource SectionLabel}" />
+                        <Border Style="{StaticResource Card}">
+                            <StackPanel>
+                                <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding SubtitleServerEnabled}" Margin="0,12">
+                                    <StackPanel>
+                                        <TextBlock Text="Make subtitles for what's playing in Ripple" />
+                                        <TextBlock Style="{StaticResource Sub}" Text="Ripple asks Caption for subtitles when a movie or episode starts. Caption reads the audio ahead of playback with the most accurate settings, so the subtitles are timed to the word, like downloaded ones. Only apps on this PC can ask." />
+                                        <TextBlock Style="{StaticResource Sub}" Text="{Binding SubtitleServerStatus}" Foreground="{DynamicResource FaintBrush}" Margin="0,4,0,0" />
+                                    </StackPanel>
+                                </CheckBox>
+                                <Border Style="{StaticResource Divider}" />
+                                <Grid Style="{StaticResource Row}">
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="Model for Ripple subtitles" />
+                                        <TextBlock Style="{StaticResource Sub}" Text="Large v3 is the most accurate (it isn't live, so speed matters less)" />
+                                    </StackPanel>
+                                    <ComboBox ItemsSource="{Binding SubtitleModelChoices}" SelectedValuePath="Value" DisplayMemberPath="Label"
+                                              SelectedValue="{Binding SubtitleModel}" Width="240" HorizontalAlignment="Right" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
 
                         <TextBlock Text="Listening" Style="{StaticResource SectionLabel}" />
                         <Border Style="{StaticResource Card}">

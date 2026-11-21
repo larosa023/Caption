@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -69,8 +70,9 @@ namespace Caption.Whisper
                                 bool gpu = input.ReadBoolean();
                                 string vad = input.ReadString();
                                 int threads = input.ReadInt32();
+                                int dtw = input.ReadInt32();
                                 engine?.Dispose();
-                                engine = new WhisperEngine(engineDir, model, gpu, vad, threads);
+                                engine = new WhisperEngine(engineDir, model, gpu, vad, threads, dtw);
                                 Log.Info($"Loaded {Path.GetFileName(model)} (gpu: {engine.GpuActive}, vad: {engine.HasVad})");
                                 output.Write(WorkerProtocol.Ok);
                                 output.Write(engine.GpuActive);
@@ -89,6 +91,8 @@ namespace Caption.Whisper
                                     SuppressNonSpeech = input.ReadBoolean(),
                                     Prompt = input.ReadString(),
                                     BeamSize = input.ReadInt32(),
+                                    KeepContext = input.ReadBoolean(),
+                                    WordTimes = input.ReadBoolean(),
                                 };
                                 req.Samples = WorkerProtocol.ReadFloats(input);
                                 req.Count = req.Samples.Length;
@@ -104,6 +108,15 @@ namespace Caption.Whisper
                                     output.Write(s.T1);
                                     output.Write(s.NoSpeech);
                                     output.Write(s.Text);
+                                    output.Write(s.Words?.Count ?? -1);
+                                    if (s.Words != null)
+                                        foreach (var w in s.Words)
+                                        {
+                                            output.Write(w.Text);
+                                            output.Write(w.Start);
+                                            output.Write(w.End);
+                                            output.Write(w.Prob);
+                                        }
                                 }
                                 break;
                             }
@@ -198,7 +211,7 @@ namespace Caption.Whisper
             if (status != WorkerProtocol.Ok) throw new InvalidDataException("Unexpected worker reply.");
         }
 
-        public WorkerLoadInfo Load(string engineDir, string modelPath, bool gpu, string vadModel, int threads)
+        public WorkerLoadInfo Load(string engineDir, string modelPath, bool gpu, string vadModel, int threads, int dtwPreset = 0)
         {
             lock (_gate)
             {
@@ -208,6 +221,7 @@ namespace Caption.Whisper
                 _out.Write(gpu);
                 _out.Write(vadModel ?? "");
                 _out.Write(threads);
+                _out.Write(dtwPreset);
                 _out.Flush();
                 ReadStatus();
                 return new WorkerLoadInfo
@@ -231,6 +245,8 @@ namespace Caption.Whisper
                 _out.Write(req.SuppressNonSpeech);
                 _out.Write(req.Prompt ?? "");
                 _out.Write(req.BeamSize);
+                _out.Write(req.KeepContext);
+                _out.Write(req.WordTimes);
                 WorkerProtocol.WriteFloats(_out, req.Samples, req.Count);
                 _out.Flush();
                 ReadStatus();
@@ -242,13 +258,21 @@ namespace Caption.Whisper
                 int n = _in.ReadInt32();
                 for (int i = 0; i < n; i++)
                 {
-                    res.Segments.Add(new Segment
+                    var seg = new Segment
                     {
                         T0 = _in.ReadInt64(),
                         T1 = _in.ReadInt64(),
                         NoSpeech = _in.ReadSingle(),
                         Text = _in.ReadString(),
-                    });
+                    };
+                    int wn = _in.ReadInt32();
+                    if (wn >= 0)
+                    {
+                        seg.Words = new List<WordTime>(wn);
+                        for (int w = 0; w < wn; w++)
+                            seg.Words.Add(new WordTime { Text = _in.ReadString(), Start = _in.ReadInt64(), End = _in.ReadInt64(), Prob = _in.ReadSingle() });
+                    }
+                    res.Segments.Add(seg);
                 }
                 return res;
             }

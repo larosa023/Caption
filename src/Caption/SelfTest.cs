@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -105,6 +107,60 @@ namespace Caption
                 Line($"pipeline: {partials} partial updates; lines: {finished}");
                 if (!finished.ToString().Contains("country", StringComparison.OrdinalIgnoreCase)) failures++;
 
+                // 3b) Subtitles for apps, end to end over the local API: a 4x JFK "episode" with pauses.
+                {
+                    string media = Path.Combine(Path.GetDirectoryName(outFile)!, "episode.wav");
+                    const int Gap = 3;
+                    var starts = new List<double>();
+                    var episode = new List<float>();
+                    for (int k = 0; k < 4; k++)
+                    {
+                        starts.Add(episode.Count / 16000.0);
+                        episode.AddRange(audio);
+                        episode.AddRange(new float[16000 * Gap]);
+                    }
+                    WriteWav(media, episode.ToArray());
+                    var settings = new AppSettings();
+                    settings.Normalize();
+                    using var subs = new Caption.Subtitles.SubtitleService(settings) { TestOverride = (engine, model) };
+                    using var server = new Caption.Subtitles.SubtitleServer(subs);
+                    server.Start();
+                    using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+                    string api = $"http://127.0.0.1:{Caption.Subtitles.SubtitleServer.Port}/v1";
+                    Line("api health: " + http.GetStringAsync(api + "/health").Result);
+                    var post = http.PostAsync(api + "/jobs", new System.Net.Http.StringContent(
+                        System.Text.Json.JsonSerializer.Serialize(new { url = media, title = "Self-test", position = 0, language = "en" }),
+                        Encoding.UTF8, "application/json")).Result;
+                    string created = post.Content.ReadAsStringAsync().Result;
+                    Line("api job: " + created);
+                    string id = System.Text.Json.Nodes.JsonNode.Parse(created)?["id"]?.GetValue<string>() ?? "";
+                    var sw2 = Stopwatch.StartNew();
+                    string status = "";
+                    while (sw2.Elapsed < TimeSpan.FromMinutes(4))
+                    {
+                        Thread.Sleep(1000);
+                        status = http.GetStringAsync($"{api}/jobs/{id}").Result;
+                        if (status.Contains("\"state\":\"done\"") || status.Contains("\"state\":\"error\"")) break;
+                    }
+                    Line($"api status after {sw2.Elapsed.TotalSeconds:0} s: {status}");
+                    string srt = http.GetStringAsync($"{api}/jobs/{id}.srt").Result;
+                    Line("srt:\n" + srt);
+                    int country = 0;
+                    foreach (var line in srt.Split('\n')) if (line.Contains("country", StringComparison.OrdinalIgnoreCase)) country++;
+                    if (country < 4) { failures++; Line($"FAIL: expected 'country' in all 4 repeats, got {country}"); }
+                    // Timing: each repeat's first subtitle must start within 0.6 s of the speech (JFK starts ~0.3 s in).
+                    var cueStarts = new List<double>();
+                    foreach (var line in srt.Split('\n'))
+                        if (line.Contains("-->")) cueStarts.Add(TimeSpan.ParseExact(line.Split(" --> ")[0].Trim(), @"hh\:mm\:ss\,fff", System.Globalization.CultureInfo.InvariantCulture).TotalSeconds);
+                    foreach (var st in starts)
+                    {
+                        double nearest = cueStarts.Count == 0 ? 99 : cueStarts.Min(c => Math.Abs(c - (st + 0.3)));
+                        Line($"repeat at {st:0.0}s: nearest subtitle start off by {nearest:0.00}s");
+                        if (nearest > 0.6) failures++;
+                    }
+                    http.DeleteAsync($"{api}/jobs/{id}").Wait();
+                }
+
                 // 4) Resampler + filters sanity.
                 var rs = new Resampler(48000);
                 int n = rs.Process(new float[48000]).Length;
@@ -121,6 +177,16 @@ namespace Caption
             }
             Line(failures == 0 ? "SELFTEST PASSED" : $"SELFTEST FAILED ({failures})");
             return failures == 0 ? 0 : 1;
+        }
+
+        private static void WriteWav(string path, float[] samples)
+        {
+            using var w = new BinaryWriter(File.Create(path));
+            int bytes = samples.Length * 2;
+            w.Write(Encoding.ASCII.GetBytes("RIFF")); w.Write(36 + bytes); w.Write(Encoding.ASCII.GetBytes("WAVE"));
+            w.Write(Encoding.ASCII.GetBytes("fmt ")); w.Write(16); w.Write((short)1); w.Write((short)1); w.Write(16000); w.Write(32000); w.Write((short)2); w.Write((short)16);
+            w.Write(Encoding.ASCII.GetBytes("data")); w.Write(bytes);
+            foreach (var f in samples) w.Write((short)Math.Clamp(f * 32767, -32768, 32767));
         }
 
         /// <summary>16-bit PCM WAV → 16 kHz mono float.</summary>

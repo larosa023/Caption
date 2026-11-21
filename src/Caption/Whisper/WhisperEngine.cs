@@ -13,6 +13,16 @@ namespace Caption.Whisper
         public long T1;
         public float NoSpeech;
         public string Text = "";
+        /// <summary>Per-word timing (only when requested).</summary>
+        public List<WordTime>? Words;
+    }
+
+    public sealed class WordTime
+    {
+        public string Text = "";
+        public long Start;       // 10 ms units, relative to the audio passed in
+        public long End;
+        public float Prob;
     }
 
     public sealed class TranscribeResult
@@ -41,6 +51,10 @@ namespace Caption.Whisper
         public bool SuppressNonSpeech = true;
         /// <summary>1 = greedy; 2+ = beam search with that many beams (steadier, more accurate).</summary>
         public int BeamSize = 1;
+        /// <summary>Carry the text of the previous call as context (long-form subtitles).</summary>
+        public bool KeepContext;
+        /// <summary>Return per-word timing (DTW when the engine was loaded with it).</summary>
+        public bool WordTimes;
         public string Prompt = "";
         public float[] Samples = Array.Empty<float>();
         public int Count;
@@ -61,7 +75,9 @@ namespace Caption.Whisper
         public bool Multilingual { get; }
         public string SystemInfo { get; }
 
-        public WhisperEngine(string engineDir, string modelPath, bool useGpu, string? vadModelPath, int threads)
+        public bool Dtw { get; }
+
+        public WhisperEngine(string engineDir, string modelPath, bool useGpu, string? vadModelPath, int threads, int dtwPreset = 0)
         {
             WhisperNative.Load(engineDir);
             HookLog();
@@ -72,8 +88,15 @@ namespace Caption.Whisper
             Buffer.MemoryCopy((void*)defaults, cp.Data, WhisperNative.ContextParamsSize, WhisperNative.ContextParamsSize);
             WhisperNative.whisper_free_context_params(defaults);
             cp.Data[WhisperNative.OffUseGpu] = (byte)(useGpu ? 1 : 0);
-            cp.Data[WhisperNative.OffFlashAttn] = (byte)(useGpu ? 1 : 0);
+            cp.Data[WhisperNative.OffFlashAttn] = (byte)(useGpu && dtwPreset == 0 ? 1 : 0);
             *(int*)(cp.Data + WhisperNative.OffGpuDevice) = 0;
+            if (dtwPreset > 0)
+            {
+                // Word timing from cross-attention (DTW): much more exact than Whisper's own timestamps.
+                cp.Data[WhisperNative.OffDtwTokenTimestamps] = 1;
+                *(int*)(cp.Data + WhisperNative.OffDtwAheadsPreset) = dtwPreset;
+                Dtw = true;
+            }
 
             _sawCuda = false;
             byte[] path = Utf8Z(modelPath);
@@ -144,7 +167,7 @@ namespace Caption.Whisper
             byte* d = fp.Data;
             *(int*)(d + WhisperNative.OffNThreads) = _threads;
             d[WhisperNative.OffTranslate] = (byte)(req.Translate ? 1 : 0);
-            d[WhisperNative.OffNoContext] = 1;
+            d[WhisperNative.OffNoContext] = (byte)(req.KeepContext ? 0 : 1);
             d[WhisperNative.OffNoTimestamps] = 0;
             d[WhisperNative.OffSingleSegment] = 0;
             d[WhisperNative.OffPrintSpecial] = 0;
@@ -177,18 +200,69 @@ namespace Caption.Whisper
             int n = WhisperNative.whisper_full_n_segments(_ctx);
             for (int i = 0; i < n; i++)
             {
-                result.Segments.Add(new Segment
+                var seg = new Segment
                 {
                     T0 = WhisperNative.whisper_full_get_segment_t0(_ctx, i),
                     T1 = WhisperNative.whisper_full_get_segment_t1(_ctx, i),
                     NoSpeech = WhisperNative.whisper_full_get_segment_no_speech_prob(_ctx, i),
                     Text = WhisperNative.Utf8(WhisperNative.whisper_full_get_segment_text(_ctx, i)) ?? ""
-                });
+                };
+                if (req.WordTimes) seg.Words = Words(i, seg.T0, seg.T1);
+                result.Segments.Add(seg);
             }
             int langId = WhisperNative.whisper_full_lang_id(_ctx);
             result.Language = langId >= 0 ? WhisperNative.Utf8(WhisperNative.whisper_lang_str(langId)) ?? "" : "";
             result.Milliseconds = (int)sw.ElapsedMilliseconds;
             return result;
+        }
+
+        /// <summary>A segment's words with times, built from its tokens (bytes joined first so multi-byte text stays intact).</summary>
+        private List<WordTime> Words(int segment, long segT0, long segT1)
+        {
+            var words = new List<WordTime>();
+            int eot = WhisperNative.whisper_token_eot(_ctx);
+            int n = WhisperNative.whisper_full_n_tokens(_ctx, segment);
+            var bytes = new List<byte>();
+            long start = -1;
+            float probSum = 0;
+            int probN = 0;
+            void Flush(long end)
+            {
+                string text = Encoding.UTF8.GetString(bytes.ToArray()).Trim();
+                if (text.Length > 0)
+                    words.Add(new WordTime { Text = text, Start = start, End = end, Prob = probN > 0 ? probSum / probN : 0 });
+                bytes.Clear();
+                probSum = 0;
+                probN = 0;
+                start = -1;
+            }
+            for (int t = 0; t < n; t++)
+            {
+                var data = WhisperNative.whisper_full_get_token_data(_ctx, segment, t);
+                if (data.Id >= eot) continue; // timestamps and special tokens
+                IntPtr p = WhisperNative.whisper_full_get_token_text(_ctx, segment, t);
+                if (p == IntPtr.Zero) continue;
+                int len = 0;
+                while (((byte*)p)[len] != 0) len++;
+                if (len == 0) continue;
+                long time = Dtw && data.TDtw >= 0 ? data.TDtw : data.T0;
+                if (time < segT0) time = segT0;
+                bool newWord = ((byte*)p)[0] == (byte)' ';
+                if (newWord && bytes.Count > 0) Flush(time);
+                if (start < 0) start = time;
+                for (int b = 0; b < len; b++) bytes.Add(((byte*)p)[b]);
+                probSum += data.P;
+                probN++;
+            }
+            if (bytes.Count > 0) Flush(segT1);
+            // Keep times ordered and inside the segment.
+            for (int w = 0; w < words.Count; w++)
+            {
+                words[w].Start = Math.Clamp(words[w].Start, segT0, segT1);
+                if (w + 1 < words.Count) words[w].End = Math.Max(words[w].Start, Math.Min(words[w].End, words[w + 1].Start));
+                words[w].End = Math.Clamp(Math.Max(words[w].End, words[w].Start + 5), segT0, segT1 + 50);
+            }
+            return words;
         }
 
         /// <summary>Speech probability for each 512-sample (32 ms) frame, or null if there's no VAD model.</summary>
