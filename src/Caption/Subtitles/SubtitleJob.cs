@@ -36,7 +36,15 @@ namespace Caption.Subtitles
     {
         private const int Rate = 16000;
         private const double AheadSeconds = 8 * 60;
-        private const double FirstChunk = 18, Chunk = 75;
+        // Chunk length grows with how far ahead of playback we are: short while playback is close behind
+        // (so subtitles keep appearing), long once there's a lead (fewer, better-context reads).
+        private const double FirstChunk = 12, Chunk = 75;
+        private double ChunkTarget(double chunkStart, bool first)
+        {
+            if (first) return FirstChunk;
+            double lead = chunkStart - _playhead;
+            return lead < 30 ? 15 : lead < 90 ? 30 : lead < 180 ? 50 : Chunk;
+        }
 
         private readonly WorkerClient _worker;
         private readonly bool _hasVad;
@@ -184,6 +192,8 @@ namespace Caption.Subtitles
             var raw = new byte[Rate * 8 * 2]; // ~2 s of stereo float
             int carry = 0;
             bool eof = false;
+            var readClock = System.Diagnostics.Stopwatch.StartNew();
+            int chunks = 0;
 
             while (!_stop && _restartAt == null)
             {
@@ -192,6 +202,7 @@ namespace Caption.Subtitles
                 {
                     State = "ahead";
                     Thread.Sleep(500);
+                    readClock.Restart();
                     continue;
                 }
 
@@ -214,14 +225,24 @@ namespace Caption.Subtitles
                 }
 
                 // Another job already covered what's next (seeked back earlier): jump past it.
-                double target = first ? FirstChunk : Chunk;
+                double target = ChunkTarget(chunkStart, first);
                 if (mono.Count >= target * Rate || (eof && mono.Count > Rate / 2))
                 {
                     int cut = eof ? mono.Count : QuietCut(mono, (int)(target * Rate));
                     var chunk = mono.GetRange(0, cut).ToArray();
                     mono.RemoveRange(0, cut);
+                    double readSec = readClock.Elapsed.TotalSeconds;
+                    var tx = System.Diagnostics.Stopwatch.StartNew();
                     Transcribe(chunk, chunkStart, keepContext);
+                    double txSec = tx.Elapsed.TotalSeconds;
                     keepContext = true;
+                    double len = cut / (double)Rate;
+                    double leadAfter = chunkStart + len - _playhead;
+                    // Every chunk while starting, then every 10th, plus any time playback caught up.
+                    if (chunks < 6 || chunks % 10 == 0 || leadAfter < 5)
+                        Log.Info($"Subtitles to {Fmt(chunkStart + len)}: {len:0} s of audio downloaded in {readSec:0.0} s, transcribed in {txSec:0.0} s; {leadAfter:0} s ahead of playback");
+                    chunks++;
+                    readClock.Restart();
                     lock (_gate) AddCovered(chunkStart, chunkStart + cut / (double)Rate);
                     chunkStart += cut / (double)Rate;
                     DoneUntil = chunkStart;
@@ -256,6 +277,8 @@ namespace Caption.Subtitles
         }
 
         /// <summary>Cut near the target length at the quietest moment of the last 8 seconds, so no word is split.</summary>
+        private static string Fmt(double t) => TimeSpan.FromSeconds(Math.Max(0, t)).ToString(t >= 3600 ? @"h\:mm\:ss" : @"m\:ss");
+
         private static int QuietCut(List<float> mono, int target)
         {
             int win = Rate / 5; // 200 ms

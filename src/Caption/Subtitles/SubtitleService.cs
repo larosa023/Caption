@@ -164,6 +164,7 @@ namespace Caption.Subtitles
                 _job = null;
             }
             _lastActivity = DateTime.UtcNow;
+            Log.Info($"Subtitle job {job.Id} stopped ({job.CueCount} subtitles made)");
             Task.Run(() => job.Dispose());
             Changed?.Invoke();
         }
