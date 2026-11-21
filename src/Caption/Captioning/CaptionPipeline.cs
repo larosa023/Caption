@@ -94,6 +94,7 @@ namespace Caption.Captioning
         private long _bufStart;                     // absolute sample index of _buf[0]
         private int _sinceInference;
         private long _pausedAt;
+        private long _lastSpeech;                    // absolute sample index where speech was last heard
 
         // agreement state
         private List<Word> _prev = new();           // the previous read's words for the buffer
@@ -306,6 +307,7 @@ namespace Caption.Captioning
             AppendBuf(frame);
             _sinceInference += Frame;
             _silenceRun = speech ? 0 : _silenceRun + 1;
+            if (speech) _lastSpeech = _consumed + Frame;
 
             if (_silenceRun * 32 >= _o.PauseToEndMs)
             {
@@ -436,6 +438,18 @@ namespace Caption.Captioning
             if (end) FinishLine();
         }
 
+        private readonly List<string> _recent = new();
+
+        /// <summary>A line that only repeats words from the last lines (a re-read that slipped through) isn't shown twice.</summary>
+        private bool IsEcho(string text)
+        {
+            var keys = text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(Key).ToList();
+            if (keys.Count == 0 || _recent.Count == 0) return false;
+            var previous = new HashSet<string>(_recent.SelectMany(r => r.Split(' ', StringSplitOptions.RemoveEmptyEntries)).Select(Key));
+            int seen = keys.Count(previous.Contains);
+            return keys.Count <= 6 && seen == keys.Count && _recent[^1].Length > text.Length;
+        }
+
         private void FinishLine()
         {
             if (_line.Count == 0) return;
@@ -443,6 +457,9 @@ namespace Caption.Captioning
             long start = _line[0].Start, end = Math.Max(_line[^1].End, start + Rate / 2);
             _line.Clear();
             if (!text.Any(char.IsLetterOrDigit)) return;
+            if (IsEcho(text)) return;
+            _recent.Add(text);
+            if (_recent.Count > 3) _recent.RemoveAt(0);
             string? original = null;
             if (_o.TranslateToEnglish && _o.KeepOriginal && DetectedLanguage != "en") original = Original(start, end);
             LastDelayMs = Delay();
@@ -532,7 +549,7 @@ namespace Caption.Captioning
             {
                 Language = lang,
                 Translate = translate,
-                Final = final,
+                Final = false, // temperature fallback invents words over silence/music; beams are used instead
                 SuppressNonSpeech = !_o.ShowSoundLabels,
                 BeamSize = _o.BeamSize,
                 // Recent finished text as context: helps names, casing and punctuation stay consistent.
@@ -585,6 +602,8 @@ namespace Caption.Captioning
             foreach (var seg in res.Segments)
             {
                 if (seg.T0 > limit) continue;
+                // Nothing can be said after the last moment voice was detected: such text is invented.
+                if (_bufStart + seg.T0 * Rate / 100 > _lastSpeech + Rate / 4) continue;
                 string text = Clean(seg.Text);
                 if (text.Length == 0) continue;
                 double secs = Math.Max(0.1, (seg.T1 - seg.T0) / 100.0);
