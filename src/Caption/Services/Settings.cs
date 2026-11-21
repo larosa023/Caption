@@ -86,6 +86,15 @@ namespace Caption.Services
                 if (PauseToEndMs == 600) PauseToEndMs = 900;
                 SettingsVersion = 2;
             }
+            if (SettingsVersion < 3)
+            {
+                // 0.2.0: movie-grade subtitles.
+                Profiles ??= new List<Profile>();
+                if (Profiles.Count > 0 && !Profiles.Any(p => p?.Id == "movies")) Profiles.Insert(Math.Min(1, Profiles.Count), Profile.MoviesProfile());
+                Bar ??= new CaptionStyle();
+                if (Bar.Preset is "classic" or "custom" && Bar.Layout == "two") { Bar.Preset = "movie"; Bar.ApplyMoviePreset(); Bar.Layout = "subtitle"; }
+                SettingsVersion = 3;
+            }
             SkipVersions ??= new List<string>();
             Profiles ??= new List<Profile>();
             Profiles.RemoveAll(p => p == null || string.IsNullOrWhiteSpace(p.Id));
@@ -139,6 +148,12 @@ namespace Caption.Services
         /// <summary>Show the original line too, above the translation.</summary>
         public bool ShowOriginal { get; set; }
 
+        /// <summary>
+        /// Pull dialogue forward before recognition: center channel for surround, center extraction for stereo,
+        /// rumble cut. Big help for movies and shows, harmless for plain speech.
+        /// </summary>
+        public bool DialogueFocus { get; set; } = true;
+
         public Profile Clone()
         {
             var p = (Profile)MemberwiseClone();
@@ -158,9 +173,16 @@ namespace Caption.Services
             DeviceId ??= ""; DeviceName ??= ""; MicDeviceId ??= ""; MicDeviceName ??= "";
         }
 
+        public static Profile MoviesProfile() => new()
+        {
+            Id = "movies", Name = "Movies & shows", Source = "apps",
+            Apps = new List<string> { "stremio.exe", "stremio-shell-ng.exe", "Nuvio.exe", "Ripple.exe", "vlc.exe", "mpv.exe", "Plex.exe" },
+        };
+
         public static IEnumerable<Profile> Defaults()
         {
             yield return new Profile { Id = "everything", Name = "Everything", Source = "system" };
+            yield return MoviesProfile();
             yield return new Profile
             {
                 Id = "streams", Name = "Streams", Source = "apps",
@@ -178,18 +200,24 @@ namespace Caption.Services
 
     public sealed class CaptionStyle
     {
-        /// <summary>classic, cinema, minimal, contrast, theme or custom.</summary>
-        public string Preset { get; set; } = "classic";
-        public string FontFamily { get; set; } = "Segoe UI Variable Display";
-        public double FontSize { get; set; } = 28;
+        /// <summary>movie, classic, cinema, minimal, contrast, theme or custom.</summary>
+        public string Preset { get; set; } = "movie";
+        public string FontFamily { get; set; } = "Segoe UI";
+        public double FontSize { get; set; } = 34;
         public bool Bold { get; set; } = true;
         public string TextColor { get; set; } = "#FFFFFF";
         public string BackgroundColor { get; set; } = "#000000";
-        public double BackgroundOpacity { get; set; } = 0.72;
-        public bool Shadow { get; set; }
+        public double BackgroundOpacity { get; set; }
+        public bool Shadow { get; set; } = true;
+        /// <summary>Black outline around letters, like film subtitles (0 = none).</summary>
+        public double Outline { get; set; } = 3;
 
-        /// <summary>"one", "two" or "scroll".</summary>
-        public string Layout { get; set; } = "two";
+        /// <summary>"subtitle" (film-style 1–2 line subtitles), "one", "two" or "scroll".</summary>
+        public string Layout { get; set; } = "subtitle";
+        /// <summary>Subtitle layout: longest line in characters (42 is the broadcast standard).</summary>
+        public int MaxCharsPerLine { get; set; } = 42;
+        /// <summary>Show words the moment they're heard (dimmed until they settle). Off = only settled text, a bit later.</summary>
+        public bool ShowTentative { get; set; } = true;
         /// <summary>"bottom" (of the screen), "window" (bottom of the active window) or "free".</summary>
         public string Position { get; set; } = "bottom";
         public double Width { get; set; } = 960;
@@ -211,7 +239,9 @@ namespace Caption.Services
             Width = Math.Clamp(Width, 240, 4000);
             BoxHeight = Math.Clamp(BoxHeight, 80, 2000);
             BottomMargin = Math.Clamp(BottomMargin, 0, 1000);
-            if (Layout is not ("one" or "two" or "scroll")) Layout = "two";
+            if (Layout is not ("subtitle" or "one" or "two" or "scroll")) Layout = "subtitle";
+            Outline = Math.Clamp(Outline, 0, 8);
+            MaxCharsPerLine = Math.Clamp(MaxCharsPerLine, 20, 80);
             if (Position is not ("bottom" or "window" or "free")) Position = "bottom";
             if (Align is not ("center" or "left")) Align = "center";
             FontFamily = string.IsNullOrWhiteSpace(FontFamily) ? "Segoe UI Variable Display" : FontFamily;
@@ -221,6 +251,18 @@ namespace Caption.Services
         }
 
         public CaptionStyle Clone() => (CaptionStyle)MemberwiseClone();
+
+        public void ApplyMoviePreset()
+        {
+            TextColor = "#FFFFFF";
+            BackgroundColor = "#000000";
+            BackgroundOpacity = 0;
+            Shadow = true;
+            Outline = 3;
+            Bold = true;
+            FontFamily = "Segoe UI";
+            if (FontSize < 30) FontSize = 34;
+        }
     }
 
     /// <summary>A key plus modifiers. Modifier bits match both WPF ModifierKeys and RegisterHotKey.</summary>

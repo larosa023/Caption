@@ -102,6 +102,12 @@ namespace Caption.ViewModels
             set { if (!string.IsNullOrWhiteSpace(value) && value != Profile.TargetLanguage) { Profile.TargetLanguage = value; OnPropertyChanged(); OnPropertyChanged(nameof(Summary)); _changed(this, false); } }
         }
 
+        public bool DialogueFocus
+        {
+            get => Profile.DialogueFocus;
+            set { if (value != Profile.DialogueFocus) { Profile.DialogueFocus = value; OnPropertyChanged(); _changed(this, true); } }
+        }
+
         public bool ShowOriginal
         {
             get => Profile.ShowOriginal;

@@ -1,9 +1,10 @@
-## Caption 0.1.1
+## Caption 0.2.0
 
-Much more accurate captions that keep up with the speaker.
+Built for movies and shows.
 
-- **Whole sentences, not fragments.** Whisper now always hears the sentence so far, with the previous lines as context, instead of short clips cut at every little pause. Far fewer wrong or made-up words, and better names, casing and punctuation.
-- **Words appear as they're spoken.** The line is re-read every 0.3 s. Each word turns solid as soon as two reads agree on it; only the newest few words stay dimmed while they might still change. Lines end at real sentence ends.
-- **More accurate on the GPU.** Beam search is on when Caption runs on your GPU.
-- **"English (Whisper)" only translates speech that isn't English.** English stays as it was spoken; translating it again made captions worse.
-- Your listening settings move to the new defaults (update every 0.3 s, a 0.9 s pause ends a line) unless you had changed them.
+- **Film-style subtitles.** A new Subtitles layout (now the default) shows each sentence as one or two balanced lines of up to 42 characters, in white with a black outline, like real subtitles. Lines clear after their reading time instead of lingering.
+- **Focus on dialogue.** Caption pulls voices forward and turns down music and effects before recognizing speech: the center channel on surround audio, and center extraction on stereo. On for every profile; switch it off per profile if you like.
+- **Steadier text.** Each subtitle is one sentence; long ones split at commas. Words show as soon as they're heard and settle in place (or turn off "Show words as soon as they're heard" for only settled text).
+- **More accurate on the GPU.** Beam search now uses 5 beams.
+- **New "Movies & shows" profile** for Stremio, Nuvio, Ripple, VLC, mpv and Plex. Your Everything profile still works with any app.
+- New caption bar options: Movie preset, outline thickness, characters per line.

@@ -50,6 +50,27 @@ namespace Caption
                     }
                 }
 
+                // 1b) Dialogue focus on stereo audio must leave centered speech intact.
+                {
+                    var fmt = new NAudio.Wave.WaveFormat(16000, 16, 2);
+                    var bytes = new byte[audio.Length * 4];
+                    var rng = new Random(1);
+                    for (int k = 0; k < audio.Length; k++)
+                    {
+                        // Speech in the center plus some wide, uncorrelated noise.
+                        short l = (short)Math.Clamp((audio[k] + (float)(rng.NextDouble() - 0.5) * 0.15f) * 32767, -32768, 32767);
+                        short r = (short)Math.Clamp((audio[k] + (float)(rng.NextDouble() - 0.5) * 0.15f) * 32767, -32768, 32767);
+                        BitConverter.GetBytes(l).CopyTo(bytes, k * 4);
+                        BitConverter.GetBytes(r).CopyTo(bytes, k * 4 + 2);
+                    }
+                    var conv = new SourceConverter(fmt, dialogueFocus: true);
+                    var focused = conv.Process(bytes, bytes.Length);
+                    using var e2 = new WhisperEngine(engine, model, false, vad, 4);
+                    var fr = e2.Transcribe(new TranscribeRequest { Samples = focused, Count = focused.Length, Final = true });
+                    Line($"dialogue focus [{fr.Language}]: {fr.Text}");
+                    if (!fr.Text.Contains("country", StringComparison.OrdinalIgnoreCase)) failures++;
+                }
+
                 // 2) Through the worker process, then 3) the streaming pipeline.
                 using var worker = new WorkerClient();
                 var info = worker.Load(engine, model, false, vad, 4);
@@ -59,7 +80,7 @@ namespace Caption
 
                 var finished = new StringBuilder();
                 int partials = 0;
-                using (var pipeline = new CaptionPipeline(worker, info.HasVad, new PipelineOptions()))
+                using (var pipeline = new CaptionPipeline(worker, info.HasVad, new PipelineOptions { SubtitleMode = true }))
                 {
                     pipeline.Partial += (a, b) => { if (a.Length + b.Length > 0) Interlocked.Increment(ref partials); };
                     pipeline.Finished += f => { lock (finished) finished.Append('[').Append(f.Start.TotalSeconds.ToString("0.0")).Append("s] ").Append(f.Text).Append(' '); };

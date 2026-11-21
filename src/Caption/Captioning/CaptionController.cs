@@ -205,7 +205,9 @@ namespace Caption.Captioning
                 ShowSoundLabels = _settings.ShowSoundLabels,
                 FilterHallucinations = _settings.FilterHallucinations,
                 // Beam search on the GPU: noticeably more accurate and steadier, and still fast there.
-                BeamSize = _loadInfo?.GpuActive == true ? 4 : 1,
+                BeamSize = _loadInfo?.GpuActive == true ? 5 : 1,
+                SubtitleMode = _settings.Bar.Layout == "subtitle",
+                MaxLineChars = _settings.Bar.MaxCharsPerLine,
             };
         }
 

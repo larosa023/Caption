@@ -87,7 +87,7 @@ namespace Caption
                     bar.AddLine("And so my fellow Americans, ask not what your country can do for you.", "Original line");
                     bar.SetPartial("ask what you can do", "for your country");
                     await Pump();
-                    foreach (var layout in new[] { "one", "two", "scroll" })
+                    foreach (var layout in new[] { "subtitle", "one", "two", "scroll" })
                     {
                         settings.Bar.Layout = layout;
                         foreach (var pos in new[] { "bottom", "window", "free" })
@@ -97,12 +97,19 @@ namespace Caption
                             await Pump();
                         }
                     }
-                    foreach (var preset in new[] { "classic", "cinema", "minimal", "contrast", "theme" })
+                    foreach (var preset in new[] { "movie", "classic", "cinema", "minimal", "contrast", "theme" })
                     {
                         vm.ApplyBarPreset(preset);
                         bar.ApplyStyle();
                         await Pump();
                     }
+                    settings.Bar.Layout = "subtitle";
+                    bar.ApplyStyle();
+                    bar.SetPartial("And so my fellow Americans, ask not", "what your country can do for you");
+                    await Pump();
+                    var sub = CaptionBarWindow.FormatSubtitle("And so my fellow Americans, ask not what your country can do for you.", 9, 42);
+                    Line("subtitle format: " + sub.Text.Replace("\n", " | ") + " (dim from " + sub.DimFrom + ")");
+                    if (!sub.Text.Contains('\n')) failures++;
                     bar.SetEditing(true);
                     await Pump();
                     bar.SetEditing(false);

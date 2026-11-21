@@ -457,19 +457,23 @@ namespace Caption.ViewModels
             b.Preset = preset;
             switch (preset)
             {
-                case "classic": b.TextColor = "#FFFFFF"; b.BackgroundColor = "#000000"; b.BackgroundOpacity = 0.72; b.Shadow = false; b.Bold = true; break;
-                case "cinema": b.TextColor = "#FFE45C"; b.BackgroundColor = "#000000"; b.BackgroundOpacity = 0; b.Shadow = true; b.Bold = true; break;
-                case "minimal": b.TextColor = "#FFFFFF"; b.BackgroundColor = "#000000"; b.BackgroundOpacity = 0.0; b.Shadow = true; b.Bold = false; break;
-                case "contrast": b.TextColor = "#FFE45C"; b.BackgroundColor = "#000000"; b.BackgroundOpacity = 1.0; b.Shadow = false; b.Bold = true; break;
-                case "theme": b.BackgroundOpacity = 0.92; b.Shadow = false; b.Bold = true; break;
+                case "movie": b.ApplyMoviePreset(); break;
+                case "classic": b.Outline = 0; b.TextColor = "#FFFFFF"; b.BackgroundColor = "#000000"; b.BackgroundOpacity = 0.72; b.Shadow = false; b.Bold = true; break;
+                case "cinema": b.TextColor = "#FFE45C"; b.BackgroundColor = "#000000"; b.BackgroundOpacity = 0; b.Shadow = true; b.Bold = true; b.Outline = 2; break;
+                case "minimal": b.TextColor = "#FFFFFF"; b.BackgroundColor = "#000000"; b.BackgroundOpacity = 0.0; b.Shadow = true; b.Bold = false; b.Outline = 0; break;
+                case "contrast": b.TextColor = "#FFE45C"; b.BackgroundColor = "#000000"; b.BackgroundOpacity = 1.0; b.Shadow = false; b.Bold = true; b.Outline = 0; break;
+                case "theme": b.BackgroundOpacity = 0.92; b.Shadow = false; b.Bold = true; b.Outline = 0; break;
             }
-            foreach (var n in new[] { nameof(BarPreset), nameof(BarTextColor), nameof(BarBackground), nameof(BarOpacity), nameof(BarShadow), nameof(BarBold) })
+            foreach (var n in new[] { nameof(BarPreset), nameof(BarTextColor), nameof(BarBackground), nameof(BarOpacity), nameof(BarShadow), nameof(BarBold), nameof(BarOutline), nameof(BarFont), nameof(BarFontSize) })
                 OnPropertyChanged(n);
             Save();
             BarStyleChanged?.Invoke(this, EventArgs.Empty);
         }
 
-        public string BarLayout { get => _s.Bar.Layout; set { _s.Bar.Layout = value; BarChanged(); } }
+        public string BarLayout { get => _s.Bar.Layout; set { _s.Bar.Layout = value; BarChanged(); Controller.ApplySettings(false); } }
+        public double BarOutline { get => _s.Bar.Outline; set { _s.Bar.Outline = Math.Round(value * 2) / 2; Custom(); BarChanged(); } }
+        public double BarMaxChars { get => _s.Bar.MaxCharsPerLine; set { _s.Bar.MaxCharsPerLine = (int)Math.Round(value); BarChanged(); Controller.ApplySettings(false); } }
+        public bool BarShowTentative { get => _s.Bar.ShowTentative; set { _s.Bar.ShowTentative = value; BarChanged(); } }
         public string BarPosition { get => _s.Bar.Position; set { _s.Bar.Position = value; BarChanged(); } }
         public string BarAlign { get => _s.Bar.Align; set { _s.Bar.Align = value; BarChanged(); } }
         public string BarFont { get => _s.Bar.FontFamily; set { if (!string.IsNullOrWhiteSpace(value)) { _s.Bar.FontFamily = value; BarChanged(); } } }

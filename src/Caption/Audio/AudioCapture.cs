@@ -85,7 +85,7 @@ namespace Caption.Audio
                         problems.Add($"{(_profile.DeviceName.Length > 0 ? _profile.DeviceName : "That output")} isn't available, so Caption is listening to the default output");
                         dev = DefaultRender();
                     }
-                    if (dev != null) AddLane(new DeviceSource(dev, loopback: true));
+                    if (dev != null) AddLane(new DeviceSource(dev, loopback: true, _profile.DialogueFocus));
                     break;
                 }
                 case "apps":
@@ -94,7 +94,7 @@ namespace Caption.Audio
                 default:
                 {
                     var dev = DefaultRender();
-                    if (dev != null) AddLane(new DeviceSource(dev, loopback: true));
+                    if (dev != null) AddLane(new DeviceSource(dev, loopback: true, _profile.DialogueFocus));
                     else problems.Add("No output device found");
                     break;
                 }
@@ -199,7 +199,7 @@ namespace Caption.Audio
             {
                 bool have;
                 lock (_lanesGate) have = _lanes.Any(l => l.IsApp && ((ProcessSource)l.Source).ProcessId == root.Pid);
-                if (!have) AddLane(new ProcessSource(root.Pid, Friendly(root.ExeName)), isApp: true, exe: root.ExeName);
+                if (!have) AddLane(new ProcessSource(root.Pid, Friendly(root.ExeName), _profile.DialogueFocus), isApp: true, exe: root.ExeName);
             }
             UpdateStatus();
         }

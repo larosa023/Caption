@@ -476,6 +476,15 @@
                                     </StackPanel>
                                 </Border>
 
+                                <Border Style="{StaticResource Card}" Margin="0,8,0,0" Padding="16,4">
+                                    <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding DialogueFocus}" Margin="0,10">
+                                        <StackPanel>
+                                            <TextBlock Text="Focus on dialogue" />
+                                            <TextBlock Style="{StaticResource Sub}" Text="Pulls voices forward and turns down music and effects (uses the center channel on surround audio). Best for movies and shows." />
+                                        </StackPanel>
+                                    </CheckBox>
+                                </Border>
+
                                 <TextBlock Text="Language and translation" Style="{StaticResource SectionLabel}" />
                                 <Border Style="{StaticResource Card}" Padding="16,12">
                                     <StackPanel>
@@ -540,6 +549,14 @@
                                     <Setter Property="Padding" Value="0" />
                                 </Style>
                             </WrapPanel.Resources>
+                            <Button Command="{Binding ApplyBarPresetCommand}" CommandParameter="movie">
+                                <Border Width="140" Height="62" CornerRadius="9" Background="#3B4252" BorderThickness="2"
+                                        BorderBrush="{Binding BarPreset, Converter={StaticResource EqBrush}, ConverterParameter=movie}">
+                                    <TextBlock Text="Movie" Foreground="White" FontWeight="SemiBold" FontSize="15" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                        <TextBlock.Effect><DropShadowEffect BlurRadius="3" ShadowDepth="0" Opacity="1" /></TextBlock.Effect>
+                                    </TextBlock>
+                                </Border>
+                            </Button>
                             <Button Command="{Binding ApplyBarPresetCommand}" CommandParameter="classic">
                                 <Border Width="140" Height="62" CornerRadius="9" Background="#3B4252" BorderThickness="2"
                                         BorderBrush="{Binding BarPreset, Converter={StaticResource EqBrush}, ConverterParameter=classic}">
@@ -583,6 +600,7 @@
                                     <TextBlock Text="Lines" VerticalAlignment="Center" />
                                     <Border Style="{StaticResource SegPanel}" HorizontalAlignment="Right" VerticalAlignment="Center">
                                         <StackPanel Orientation="Horizontal">
+                                            <Button Style="{StaticResource SegButton}" Content="Subtitles" Command="{Binding SetBarCommand}" CommandParameter="layout=subtitle" Tag="{Binding BarLayout, Converter={StaticResource Eq}, ConverterParameter=subtitle}" />
                                             <Button Style="{StaticResource SegButton}" Content="One line" Command="{Binding SetBarCommand}" CommandParameter="layout=one" Tag="{Binding BarLayout, Converter={StaticResource Eq}, ConverterParameter=one}" />
                                             <Button Style="{StaticResource SegButton}" Content="Two lines" Command="{Binding SetBarCommand}" CommandParameter="layout=two" Tag="{Binding BarLayout, Converter={StaticResource Eq}, ConverterParameter=two}" />
                                             <Button Style="{StaticResource SegButton}" Content="Scrolling box" Command="{Binding SetBarCommand}" CommandParameter="layout=scroll" Tag="{Binding BarLayout, Converter={StaticResource Eq}, ConverterParameter=scroll}" />
@@ -661,6 +679,32 @@
                                 </Grid>
                                 <Border Style="{StaticResource Divider}" />
                                 <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding BarBold}" Margin="0,12"><TextBlock Text="Bold" /></CheckBox>
+                                <Border Style="{StaticResource Divider}" />
+                                <Grid Style="{StaticResource Row}">
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="Outline" />
+                                        <TextBlock Style="{StaticResource Sub}" Text="A black edge around letters, like film subtitles (Subtitles layout)" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                        <Slider Minimum="0" Maximum="6" Value="{Binding BarOutline}" SmallChange="0.5" LargeChange="1" />
+                                        <TextBlock Text="{Binding BarOutline, StringFormat={}{0:0.#} px}" Width="64" TextAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource SubtextBrush}" />
+                                    </StackPanel>
+                                </Grid>
+                                <Border Style="{StaticResource Divider}" />
+                                <Grid Style="{StaticResource Row}">
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="Characters per line" />
+                                        <TextBlock Style="{StaticResource Sub}" Text="Subtitles layout. 42 is the broadcast standard" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                        <Slider Minimum="28" Maximum="70" Value="{Binding BarMaxChars}" SmallChange="1" LargeChange="4" />
+                                        <TextBlock Text="{Binding BarMaxChars}" Width="64" TextAlignment="Right" VerticalAlignment="Center" Foreground="{DynamicResource SubtextBrush}" />
+                                    </StackPanel>
+                                </Grid>
+                                <Border Style="{StaticResource Divider}" />
+                                <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding BarShowTentative}" Margin="0,12">
+                                    <StackPanel><TextBlock Text="Show words as soon as they're heard" /><TextBlock Style="{StaticResource Sub}" Text="Fastest. Off: only show words once they've settled (steadier, a little later)" /></StackPanel>
+                                </CheckBox>
                                 <Border Style="{StaticResource Divider}" />
                                 <CheckBox Style="{StaticResource ToggleSwitch}" IsChecked="{Binding BarShadow}" Margin="0,12">
                                     <StackPanel><TextBlock Text="Text shadow" /><TextBlock Style="{StaticResource Sub}" Text="Keeps text readable without a background" /></StackPanel>

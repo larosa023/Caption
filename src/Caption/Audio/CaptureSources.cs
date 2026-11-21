@@ -29,6 +29,36 @@ namespace Caption.Audio
 
         private static readonly Guid IeeeFloat = new("00000003-0000-0010-8000-00aa00389b71");
 
+        /// <summary>Interleaved device samples (float/16/24/32-bit) → one float array per channel.</summary>
+        public static float[][] Deinterleave(byte[] buffer, int bytes, WaveFormat format)
+        {
+            int channels = Math.Max(1, format.Channels);
+            int bits = format.BitsPerSample;
+            bool isFloat = format.Encoding == WaveFormatEncoding.IeeeFloat ||
+                           (format is WaveFormatExtensible ext && ext.SubFormat == IeeeFloat);
+            int bytesPerSample = bits / 8;
+            if (bytesPerSample <= 0) return Array.Empty<float[]>();
+            int frames = bytes / (bytesPerSample * channels);
+            var result = new float[channels][];
+            for (int c = 0; c < channels; c++) result[c] = new float[frames];
+            int idx = 0;
+            for (int f = 0; f < frames; f++)
+            {
+                for (int c = 0; c < channels; c++)
+                {
+                    float v;
+                    if (isFloat && bits == 32) v = BitConverter.ToSingle(buffer, idx);
+                    else if (bits == 16) v = BitConverter.ToInt16(buffer, idx) / 32768f;
+                    else if (bits == 24) v = ((buffer[idx] << 8 | buffer[idx + 1] << 16 | buffer[idx + 2] << 24) >> 8) / 8388608f;
+                    else if (bits == 32) v = BitConverter.ToInt32(buffer, idx) / 2147483648f;
+                    else v = 0;
+                    result[c][f] = v;
+                    idx += bytesPerSample;
+                }
+            }
+            return result;
+        }
+
         /// <summary>Interleaved device samples (float/16/24/32-bit) → mono float.</summary>
         public static float[] ToMono(byte[] buffer, int bytes, WaveFormat format)
         {
@@ -67,14 +97,16 @@ namespace Caption.Audio
     {
         private readonly MMDevice _device;
         private readonly WasapiCapture _capture;
-        private Resampler? _resampler;
+        private readonly bool _focus;
+        private SourceConverter? _converter;
         private bool _disposed;
 
         public string DeviceId { get; }
         public bool IsLoopback { get; }
 
-        public DeviceSource(MMDevice device, bool loopback)
+        public DeviceSource(MMDevice device, bool loopback, bool dialogueFocus = false)
         {
+            _focus = dialogueFocus && loopback;
             _device = device;
             DeviceId = device.ID;
             IsLoopback = loopback;
@@ -86,17 +118,16 @@ namespace Caption.Audio
 
         public override void Start()
         {
-            _resampler = new Resampler(_capture.WaveFormat.SampleRate);
+            _converter = new SourceConverter(_capture.WaveFormat, _focus);
             _capture.StartRecording();
         }
 
         private void OnData(object? sender, WaveInEventArgs e)
         {
-            if (_disposed || e.BytesRecorded <= 0 || _resampler == null) return;
+            if (_disposed || e.BytesRecorded <= 0 || _converter == null) return;
             try
             {
-                var mono = ToMono(e.Buffer, e.BytesRecorded, _capture.WaveFormat);
-                RaiseSamples(_resampler.Process(mono));
+                RaiseSamples(_converter.Process(e.Buffer, e.BytesRecorded));
             }
             catch (Exception ex)
             {
@@ -127,10 +158,13 @@ namespace Caption.Audio
 
         public uint ProcessId => _pid;
 
-        public ProcessSource(uint pid, string name)
+        private readonly bool _focus;
+
+        public ProcessSource(uint pid, string name, bool dialogueFocus = false)
         {
             _pid = pid;
             Name = name;
+            _focus = dialogueFocus;
         }
 
         public override void Start()
@@ -162,7 +196,7 @@ namespace Caption.Audio
                 _client.Start();
                 ready.Set();
 
-                var resampler = new Resampler(format.SampleRate);
+                var converter = new SourceConverter(format, _focus);
                 byte[] buffer = new byte[format.AverageBytesPerSecond];
                 int frameBytes = format.BlockAlign;
                 while (!_stop)
@@ -177,7 +211,7 @@ namespace Caption.Audio
                         if ((bflags & AudioClientBufferFlags.Silent) != 0) Array.Clear(buffer, 0, bytes);
                         else Marshal.Copy(data, buffer, 0, bytes);
                         capture.ReleaseBuffer(frames);
-                        RaiseSamples(resampler.Process(ToMono(buffer, bytes, format)));
+                        RaiseSamples(converter.Process(buffer, bytes));
                         packet = capture.GetNextPacketSize();
                     }
                 }

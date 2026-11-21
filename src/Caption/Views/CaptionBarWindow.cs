@@ -33,6 +33,10 @@ namespace Caption.Views
         private readonly ScrollViewer _scroll;
         private readonly StackPanel _scrollLines;
         private readonly TextBlock _scrollPartial;
+        private readonly Caption.Controls.OutlinedText _subtitle = new() { HorizontalAlignment = HorizontalAlignment.Center };
+        private readonly Caption.Controls.OutlinedText _subOriginal = new() { HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 2) };
+        private readonly StackPanel _subtitlePanel = new();
+        private DateTime _lastLineAt = DateTime.MinValue;
         private readonly Border _toolbar;
         private readonly DispatcherTimer _followTimer;
         private readonly DispatcherTimer _idleTimer;
@@ -83,6 +87,9 @@ namespace Caption.Views
             _content = new Grid();
             _content.Children.Add(stack);
             _content.Children.Add(_scroll);
+            _subtitlePanel.Children.Add(_subOriginal);
+            _subtitlePanel.Children.Add(_subtitle);
+            _content.Children.Add(_subtitlePanel);
 
             _root = new Border { CornerRadius = new CornerRadius(12), Padding = new Thickness(20, 10, 20, 12), Child = _content };
 
@@ -160,6 +167,7 @@ namespace Caption.Views
             _lines.Add((text, secondary));
             while (_lines.Count > 200) _lines.RemoveAt(0);
             _partial = _stable = _tentative = "";
+            _lastLineAt = DateTime.Now;
             Render();
         }
 
@@ -210,7 +218,11 @@ namespace Caption.Views
             Brush dim = MakeTextBrush(s.DimPartial ? 0.62 : 1.0);
             bool hasText = _lines.Count > 0 || _partial.Length > 0 || !string.IsNullOrEmpty(_notice) || _editing;
 
-            if (scroll)
+            if (s.Layout == "subtitle")
+            {
+                hasText = RenderSubtitle();
+            }
+            else if (scroll)
             {
                 _scrollLines.Children.Clear();
                 foreach (var (text, secondary) in _lines.Skip(Math.Max(0, _lines.Count - 60)))
@@ -270,7 +282,15 @@ namespace Caption.Views
             {
                 FadeText(true);
                 _idleTimer.Stop();
-                if (_partial.Length == 0 && !_editing) _idleTimer.Start();
+                if (_partial.Length == 0 && !_editing)
+                {
+                    // Like real subtitles: a finished line stays up for about its reading time, then clears.
+                    int chars = _lines.Count > 0 ? _lines[^1].Text.Length : 20;
+                    double hold = Math.Clamp(chars / 14.0, 1.8, 5.0);
+                    double left = hold - (DateTime.Now - _lastLineAt).TotalSeconds;
+                    _idleTimer.Interval = TimeSpan.FromSeconds(Math.Max(0.3, s.Layout == "subtitle" ? left : left + 2.5));
+                    _idleTimer.Start();
+                }
             }
             else
             {
@@ -279,6 +299,106 @@ namespace Caption.Views
         }
 
         private TextAlignment Align => _settings.Bar.Align == "left" ? TextAlignment.Left : TextAlignment.Center;
+
+        /// <summary>Film-style: the current sentence as one or two balanced lines; returns whether anything shows.</summary>
+        private bool RenderSubtitle()
+        {
+            var s = _settings.Bar;
+            string stable = _stable, tentative = s.ShowTentative ? _tentative : "";
+            string text;
+            int stableWords;
+            if ((stable + tentative).Trim().Length > 0)
+            {
+                text = (stable + " " + tentative).Trim();
+                stableWords = Words(stable).Length;
+            }
+            else
+            {
+                bool fresh = _lines.Count > 0 && (DateTime.Now - _lastLineAt).TotalSeconds < Math.Clamp(_lines[^1].Text.Length / 14.0, 1.8, 5.0);
+                text = fresh ? _lines[^1].Text : _notice ?? (_editing ? "Subtitles appear here. Drag to move, pull the edges to resize." : "");
+                stableWords = int.MaxValue;
+            }
+            if (text.Length == 0)
+            {
+                _subtitle.SetText("", -1);
+                _subOriginal.SetText("", -1);
+                return false;
+            }
+
+            // Characters per line: the setting, or fewer if the bar is narrow.
+            double avgChar = s.FontSize * 0.52;
+            int maxChars = Math.Max(12, Math.Min(s.MaxCharsPerLine, (int)((s.Width - 40) / avgChar)));
+            var (formatted, dimFrom) = FormatSubtitle(text, stableWords, maxChars);
+            _subtitle.SetText(formatted, dimFrom);
+
+            string? secondary = _partial.Length == 0 && _lines.Count > 0 && text == _lines[^1].Text ? _lines[^1].Secondary : null;
+            _subOriginal.SetText(secondary == null ? "" : FormatSubtitle(secondary, int.MaxValue, (int)(maxChars * 1.4)).Text, -1);
+            return true;
+        }
+
+        private static string[] Words(string t) => t.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        /// <summary>
+        /// Breaks text into subtitle "cards" of at most two lines of maxChars, keeps the newest card, and balances
+        /// its two lines (preferring a break after punctuation). Returns the text with '
+' and where dimming starts.
+        /// </summary>
+        public static (string Text, int DimFrom) FormatSubtitle(string text, int stableWords, int maxChars)
+        {
+            var words = Words(text);
+            if (words.Length == 0) return ("", -1);
+            // Greedy lines, then cards of two lines.
+            var lines = new List<(int From, int To)>();
+            int start = 0, len = 0;
+            for (int i = 0; i < words.Length; i++)
+            {
+                int add = (len == 0 ? 0 : 1) + words[i].Length;
+                if (len > 0 && len + add > maxChars) { lines.Add((start, i)); start = i; len = words[i].Length; }
+                else len += add;
+            }
+            lines.Add((start, words.Length));
+            int cardStartLine = (lines.Count - 1) / 2 * 2;
+            int from = lines[cardStartLine].From, to = words.Length;
+
+            // Best single break inside the card.
+            int total = Enumerable.Range(from, to - from).Sum(i => words[i].Length) + (to - from - 1);
+            string joined;
+            if (total <= maxChars)
+            {
+                joined = string.Join(' ', words, from, to - from);
+            }
+            else
+            {
+                int best = -1;
+                double bestScore = double.MaxValue;
+                int left = 0;
+                for (int b = from + 1; b < to; b++)
+                {
+                    left += words[b - 1].Length + (b - 1 > from ? 1 : 0);
+                    int right = total - left - 1;
+                    if (left > maxChars || right > maxChars) continue;
+                    char last = words[b - 1][^1];
+                    double score = Math.Abs(left - right) - (last is ',' or '.' or '?' or '!' or ';' or ':' ? 8 : 0);
+                    if (score < bestScore) { bestScore = score; best = b; }
+                }
+                if (best < 0) best = lines.Count > cardStartLine + 1 ? lines[cardStartLine + 1].From : to;
+                joined = string.Join(' ', words, from, best - from) + (best < to ? "\n" + string.Join(' ', words, best, to - best) : "");
+            }
+
+            int dimFrom = -1;
+            if (stableWords < words.Length)
+            {
+                int firstDim = Math.Max(stableWords, from);
+                // Character offset of word firstDim in the joined text.
+                int count = 0, pos = 0;
+                for (int i = 0; i < joined.Length && count < firstDim - from; i++)
+                {
+                    if (joined[i] == ' ' || joined[i] == '\n') { count++; pos = i + 1; }
+                }
+                dimFrom = firstDim == from ? 0 : pos;
+            }
+            return (joined, dimFrom);
+        }
 
         /// <summary>Drops words from the front until the text fits in maxLines (the newest words always show).</summary>
         private void Fit(ref string finalText, ref string partial, int maxLines)
@@ -364,8 +484,26 @@ namespace Caption.Views
                 : null;
 
             bool scroll = s.Layout == "scroll";
+            bool subtitle = s.Layout == "subtitle";
             _scroll.Visibility = scroll ? Visibility.Visible : Visibility.Collapsed;
-            ((StackPanel)_main.Parent).Visibility = scroll ? Visibility.Collapsed : Visibility.Visible;
+            _subtitlePanel.Visibility = subtitle ? Visibility.Visible : Visibility.Collapsed;
+            ((StackPanel)_main.Parent).Visibility = scroll || subtitle ? Visibility.Collapsed : Visibility.Visible;
+            _subOriginal.FontFamily = font;
+            _subOriginal.FontSize = Math.Max(10, s.FontSize * 0.66);
+            _subOriginal.FontWeight = FontWeights.Normal;
+            _subOriginal.Fill = MakeTextBrush(0.85);
+            _subOriginal.Outline = Math.Max(1, s.Outline * 0.7);
+            _subOriginal.HorizontalAlignment = s.Align == "left" ? HorizontalAlignment.Left : HorizontalAlignment.Center;
+            _subOriginal.Refresh();
+            _subtitle.FontFamily = font;
+            _subtitle.FontSize = s.FontSize;
+            _subtitle.FontWeight = weight;
+            _subtitle.Fill = textBrush;
+            _subtitle.DimFill = MakeTextBrush(s.DimPartial ? 0.72 : 1.0);
+            _subtitle.Outline = s.Outline;
+            _subtitle.Alignment = Align;
+            _subtitle.HorizontalAlignment = s.Align == "left" ? HorizontalAlignment.Left : HorizontalAlignment.Center;
+            _subtitle.Refresh();
             _scroll.Height = scroll ? s.BoxHeight : double.NaN;
             Width = s.Width;
             _followTimer.IsEnabled = IsVisible && s.Position == "window";

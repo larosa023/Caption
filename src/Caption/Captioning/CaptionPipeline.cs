@@ -25,6 +25,9 @@ namespace Caption.Captioning
         public bool FilterHallucinations = true;
         /// <summary>Beam search width (1 = greedy). Beams make each read steadier and more accurate.</summary>
         public int BeamSize = 1;
+        /// <summary>Film-style subtitles: one sentence per subtitle, at most two lines of MaxLineChars.</summary>
+        public bool SubtitleMode;
+        public int MaxLineChars = 42;
     }
 
     public sealed class FinishedLine
@@ -415,11 +418,22 @@ namespace Caption.Captioning
         private void Confirm(Word w)
         {
             _line.Add(w);
-            int chars = _line.Sum(x => x.Text.Length + 1);
-            // Lines end at sentence ends once they're a reasonable length, or at a word boundary if they run long.
+            int chars = _line.Sum(x => x.Text.Length + 1) - 1;
             double seconds = (w.End - _line[0].Start) / (double)Rate;
-            if ((w.SentenceEnd && (chars >= 40 || seconds >= 3)) || chars >= 150 || seconds >= _o.MaxLineSeconds + 4)
-                FinishLine();
+            bool end;
+            if (_o.SubtitleMode)
+            {
+                // Subtitles: each sentence is its own subtitle; long ones split at a comma or when two lines are full.
+                int full = _o.MaxLineChars * 2;
+                bool comma = w.Text.EndsWith(',') || w.Text.EndsWith(';') || w.Text.EndsWith(':') || w.Text.EndsWith('—');
+                end = w.SentenceEnd || chars >= full - 6 || (comma && chars >= full * 2 / 3) || seconds >= 7;
+            }
+            else
+            {
+                // Lines end at sentence ends once they're a reasonable length, or at a word boundary if they run long.
+                end = (w.SentenceEnd && (chars >= 40 || seconds >= 3)) || chars >= 150 || seconds >= _o.MaxLineSeconds + 4;
+            }
+            if (end) FinishLine();
         }
 
         private void FinishLine()
