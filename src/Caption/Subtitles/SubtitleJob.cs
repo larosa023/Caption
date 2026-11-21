@@ -385,6 +385,7 @@ namespace Caption.Subtitles
                 }
             }
             if (words.Count == 0) return;
+            if (RefineTimes) Refine(words, offset);
             var cues = CueBuilder.Build(words);
             lock (_gate)
             {
@@ -405,11 +406,59 @@ namespace Caption.Subtitles
 
         // Tuning knobs (environment, for the quality eval): which audio the speech detector and Whisper hear,
         // and the detector's on/off thresholds.
-        private static readonly string VadSource = Environment.GetEnvironmentVariable("CAPTION_VAD_SRC") ?? "center";
+        private static readonly string VadSource = Environment.GetEnvironmentVariable("CAPTION_VAD_SRC") ?? "both";
         private static readonly string AsrSource = Environment.GetEnvironmentVariable("CAPTION_ASR_SRC") ?? "center";
-        private static readonly float VadOn = EnvFloat("CAPTION_VAD_ON", 0.5f), VadOff = EnvFloat("CAPTION_VAD_OFF", 0.3f);
+        private static readonly float VadOn = EnvFloat("CAPTION_VAD_ON", 0.35f), VadOff = EnvFloat("CAPTION_VAD_OFF", 0.2f);
         private static float EnvFloat(string name, float def) =>
             float.TryParse(Environment.GetEnvironmentVariable(name), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : def;
+
+        private static readonly bool RefineTimes = Environment.GetEnvironmentVariable("CAPTION_REFINE") != "0";
+        private bool[] _speech = Array.Empty<bool>();
+
+        /// <summary>
+        /// Whisper's word times are good inside a phrase but loose at its edges: a phrase's last word "lasts" until
+        /// the next one starts, even across a pause. Snap phrase edges to where the speech detector heard a voice
+        /// start and stop.
+        /// </summary>
+        private void Refine(List<TimedWord> words, double offset)
+        {
+            const double F = 512.0 / Rate;
+            var sp = _speech;
+            var runs = new List<(double A, double B)>();
+            for (int i = 0; i < sp.Length;)
+            {
+                if (!sp[i]) { i++; continue; }
+                int j = i;
+                while (j < sp.Length && sp[j]) j++;
+                double a = offset + i * F, b = offset + j * F;
+                if (runs.Count > 0 && a - runs[^1].B < 0.15) runs[^1] = (runs[^1].A, b);
+                else runs.Add((a, b));
+                i = j;
+            }
+            if (runs.Count == 0) return;
+            int RunOf(TimedWord w)
+            {
+                int best = -1; double bestD = double.MaxValue;
+                for (int r = 0; r < runs.Count; r++)
+                {
+                    double d = w.Start < runs[r].A ? runs[r].A - w.Start : w.Start > runs[r].B ? w.Start - runs[r].B : 0;
+                    if (d < bestD) { bestD = d; best = r; }
+                }
+                return bestD <= 0.4 ? best : -1;
+            }
+            var run = words.Select(RunOf).ToArray();
+            for (int k = 0; k < words.Count; k++)
+            {
+                int r = run[k];
+                if (r < 0) continue;
+                var w = words[k];
+                bool first = k == 0 || run[k - 1] != r;
+                bool last = k == words.Count - 1 || run[k + 1] != r;
+                if (first && Math.Abs(runs[r].A - w.Start) <= 0.4) w.Start = runs[r].A;
+                if (last) w.End = Math.Min(w.End, runs[r].B);
+                if (w.End < w.Start + 0.12) w.End = w.Start + 0.12;
+            }
+        }
 
         private float[]? Vad(float[] a)
         {
@@ -445,6 +494,7 @@ namespace Caption.Subtitles
             {
                 for (int i = 0; i < frames; i++) speech[i] = Rms(audio, i * Frame, Frame) > 0.01f;
             }
+            _speech = speech;
 
             // Regions, padded 0.25 s, merged across short gaps.
             var regions = new List<(int A, int B)>();
