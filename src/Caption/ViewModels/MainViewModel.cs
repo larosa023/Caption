@@ -103,7 +103,7 @@ namespace Caption.ViewModels
             RemoveAppCommand = new RelayCommand(p => { if (p is string exe) SelectedProfile?.RemoveApp(exe); });
             RefreshAppsCommand = new RelayCommand(RefreshApps);
             RefreshDevicesCommand = new RelayCommand(() => { RefreshDevices(); foreach (var p in Profiles) p.RefreshDevices(); });
-            SetupDownloadCommand = new RelayCommand(() => _ = SetupAsync(), _ => !SetupBusy && SetupModel != null);
+            SetupDownloadCommand = new RelayCommand(_ => _ = SetupAsync(), _ => !SetupBusy && SetupModel != null);
             CancelDownloadCommand = new RelayCommand(() => _downloadCts?.Cancel());
             RefreshOllamaCommand = new RelayCommand(() => _ = RefreshOllamaAsync());
             SelectThemeCommand = new RelayCommand(p => { if (p is string id) { _s.Theme = id; ApplyTheme(); } });
@@ -499,7 +499,7 @@ namespace Caption.ViewModels
         private ModelItem MakeModelItem(ModelInfo info)
         {
             var item = new ModelItem(info);
-            item.DownloadCommand = new RelayCommand(() => _ = DownloadModelAsync(item), _ => !item.IsDownloading);
+            item.DownloadCommand = new RelayCommand(_ => _ = DownloadModelAsync(item), _ => !item.IsDownloading);
             item.UseCommand = new RelayCommand(() => _ = UseModelAsync(item));
             item.CancelCommand = new RelayCommand(() => _downloadCts?.Cancel());
             item.DeleteCommand = new RelayCommand(() =>

@@ -321,7 +321,8 @@ namespace Caption.Services
 
         public static bool TryParseTheme(string text, out ThemeDef t, out string error)
         {
-            t = new ThemeDef();
+            var th = new ThemeDef();
+            t = th;
             error = "";
             JsonNode? root;
             try
@@ -359,9 +360,9 @@ namespace Caption.Services
             {
                 var map = new (string key, Action<uint> set)[]
                 {
-                    ("background", v => t.Bg = v), ("sidebar", v => t.Sidebar = v), ("surface", v => t.Surface = v),
-                    ("surfaceHover", v => t.SurfaceHover = v), ("surfaceStrong", v => t.SurfaceStrong = v),
-                    ("text", v => t.Text = v), ("subtext", v => t.Subtext = v), ("faint", v => t.Faint = v),
+                    ("background", v => th.Bg = v), ("sidebar", v => th.Sidebar = v), ("surface", v => th.Surface = v),
+                    ("surfaceHover", v => th.SurfaceHover = v), ("surfaceStrong", v => th.SurfaceStrong = v),
+                    ("text", v => th.Text = v), ("subtext", v => th.Subtext = v), ("faint", v => th.Faint = v),
                 };
                 foreach (var (key, set) in map)
                 {
