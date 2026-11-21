@@ -151,10 +151,13 @@ namespace Caption.Subtitles
             "i", "i'm", "i've", "i'll", "i'd", "you're", "we're", "they're", "is", "are", "was", "were", "be", "been",
             "and", "but", "or", "not", "no", "very", "so", "if", "than", "mr.", "mrs.", "ms.", "dr.",
         };
+        private static readonly HashSet<string> Conjunction = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "and", "but", "or", "so", "because", "that", "which", "who", "when", "where", "while", "if", "unless", "until", "before", "after",
+        };
         private static readonly HashSet<string> GoodStart = new(StringComparer.OrdinalIgnoreCase)
         {
-            "and", "but", "or", "so", "because", "that", "which", "who", "when", "where", "while", "if", "unless",
-            "to", "for", "with", "about", "from", "you're", "i'm", "we", "they", "he", "she", "it's",
+            "to", "for", "with", "about", "from", "in", "on", "at", "you're", "i'm", "we", "they", "he", "she", "it's",
         };
 
         /// <summary>
@@ -172,11 +175,13 @@ namespace Caption.Subtitles
                 int left = string.Join(' ', words, 0, b).Length, right = text.Length - left - 1;
                 if (left > MaxLine || right > MaxLine) continue;
                 string last = words[b - 1], first = words[b];
-                double score = Math.Abs(left - right);
+                double score = 0.6 * Math.Abs(left - right);
                 if (IsSentenceEnd(last)) score -= 24;
                 else if (last[^1] is ',' or ';' or ':' or '—') score -= 14;
-                if (NoEnd.Contains(last.TrimEnd(',', '.', '!', '?'))) score += 16;
-                if (GoodStart.Contains(first)) score -= 5;
+                string bare = last.TrimEnd(',', '.', '!', '?');
+                if (NoEnd.Contains(bare) || bare is "just" or "really" or "only" or "even" or "never" or "always") score += 16;
+                if (Conjunction.Contains(first)) score -= 12;
+                else if (GoodStart.Contains(first)) score -= 5;
                 if (left > right) score += 2; // slightly bottom-heavy reads better
                 if (score < bestScore) { bestScore = score; best = b; }
             }
