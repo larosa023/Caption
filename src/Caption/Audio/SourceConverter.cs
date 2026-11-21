@@ -77,6 +77,8 @@ namespace Caption.Audio
     public sealed class CenterExtractor
     {
         private const int N = 512, Hop = 128, Bins = N / 2 + 1, Log2N = 9;
+        /// <summary>How many samples the output trails the input.</summary>
+        public const int Latency = N - Hop;
         private readonly float[] _window = new float[N];
         private readonly float[] _inL = new float[N], _inR = new float[N];
         private readonly float[] _out = new float[N];

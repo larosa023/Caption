@@ -19,7 +19,29 @@ jobs:
       fail-fast: false
       matrix:
         model: [small]
-        audio: [stereo, surround]
+        audio: [stereo]
+        variant: [base, low, both, both-plain]
+        include:
+          - variant: base
+            vad_src: center
+            vad_on: "0.5"
+            vad_off: "0.3"
+            asr_src: center
+          - variant: low
+            vad_src: center
+            vad_on: "0.35"
+            vad_off: "0.2"
+            asr_src: center
+          - variant: both
+            vad_src: both
+            vad_on: "0.35"
+            vad_off: "0.2"
+            asr_src: center
+          - variant: both-plain
+            vad_src: both
+            vad_on: "0.35"
+            vad_off: "0.2"
+            asr_src: plain
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-dotnet@v5
@@ -53,6 +75,10 @@ jobs:
           CAPTION_BEAM: "5"
           CAPTION_DEBUG: "1"
           CAPTION_THREADS: "4"
+          CAPTION_VAD_SRC: ${{ matrix.vad_src }}
+          CAPTION_VAD_ON: ${{ matrix.vad_on }}
+          CAPTION_VAD_OFF: ${{ matrix.vad_off }}
+          CAPTION_ASR_SRC: ${{ matrix.asr_src }}
         run: |
           $root = (Get-Location).Path
           $film = if ('${{ matrix.audio }}' -eq 'surround') { "$root/test/film.ac3" } else { "$root/test/mix.aif" }
@@ -68,5 +94,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: eval-${{ matrix.model }}-${{ matrix.audio }}
+          name: eval-${{ matrix.model }}-${{ matrix.audio }}-${{ matrix.variant }}
           path: out/

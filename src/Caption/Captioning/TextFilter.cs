@@ -54,6 +54,19 @@ namespace Caption.Captioning
             return noSpeechProb > 0.85f && rms < 0.02f;
         }
 
+        /// <summary>
+        /// Lines Whisper makes up over music and noise because they end so many videos it was trained on
+        /// ("Thanks for watching", subtitle credits). In a movie they're as good as never real.
+        /// </summary>
+        public static bool IsOutro(string text)
+        {
+            string key = Normalize(text);
+            return key.Contains("for watching") || key.Contains("subscribe") || key.Contains("amara org") || key.Contains("subtitles by")
+                || key.Contains("castingwords") || key.Contains("otter ai") || key.Contains("next video") || key.StartsWith("transcribed by")
+                || key.Contains("ご視聴") || key.Contains("字幕由") || key.Contains("субтитры") || key.Contains("untertitel") || key.Contains("sous titr")
+                || key.Contains("시청해") || key.Contains("观看") || key.Contains("觀看") || key.Contains("gracias por ver");
+        }
+
         public static string Normalize(string text)
         {
             var sb = new StringBuilder(text.Length);

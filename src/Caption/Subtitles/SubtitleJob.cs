@@ -183,8 +183,11 @@ namespace Caption.Subtitles
             var stdout = p.StandardOutput.BaseStream;
 
             var center = new CenterExtractor();
-            var mono = new List<float>(Rate * 120);
-            double chunkStart = start;     // time of mono[0]
+            var mono = new List<float>(Rate * 120);   // dialogue-focused (center)
+            var plain = new List<float>(Rate * 120);  // plain downmix, same timeline
+            // The center extractor's output trails its input by 384 samples (N − hop); plain is delayed to match.
+            plain.AddRange(new float[CenterExtractor.Latency]);
+            double chunkStart = start - CenterExtractor.Latency / (double)Rate;     // time of mono[0]
             _readFrom = start;
             _readCursor = start;
             bool first = true;
@@ -221,6 +224,7 @@ namespace Caption.Subtitles
                     carry = total - frames * 8;
                     if (carry > 0) Array.Copy(raw, frames * 8, raw, 0, carry);
                     mono.AddRange(center.Process(l, r, frames));
+                    for (int i = 0; i < frames; i++) plain.Add((l[i] + r[i]) * 0.5f);
                     _readCursor = chunkStart + mono.Count / (double)Rate;
                 }
 
@@ -231,9 +235,12 @@ namespace Caption.Subtitles
                     int cut = eof ? mono.Count : QuietCut(mono, (int)(target * Rate));
                     var chunk = mono.GetRange(0, cut).ToArray();
                     mono.RemoveRange(0, cut);
+                    var chunkPlain = plain.GetRange(0, Math.Min(cut, plain.Count)).ToArray();
+                    if (chunkPlain.Length < cut) Array.Resize(ref chunkPlain, cut);
+                    plain.RemoveRange(0, Math.Min(cut, plain.Count));
                     double readSec = readClock.Elapsed.TotalSeconds;
                     var tx = System.Diagnostics.Stopwatch.StartNew();
-                    Transcribe(chunk, chunkStart, keepContext);
+                    Transcribe(chunk, chunkPlain, chunkStart, keepContext);
                     double txSec = tx.Elapsed.TotalSeconds;
                     keepContext = true;
                     double len = cut / (double)Rate;
@@ -311,9 +318,10 @@ namespace Caption.Subtitles
 
         // ---------------------------------------------------------------- recognition
 
-        private void Transcribe(float[] audio, double offset, bool keepContext)
+        private void Transcribe(float[] center, float[] plain, double offset, bool keepContext)
         {
-            var windows = SpeechWindows(audio);
+            var audio = AsrSource == "plain" ? plain : center;
+            var windows = SpeechWindows(center, plain);
             var words = new List<TimedWord>();
             foreach (var (from, to) in windows)
             {
@@ -363,6 +371,7 @@ namespace Caption.Subtitles
                     if (seg.Words == null || seg.Words.Count == 0) why = "no words";
                     else if (seg.T0 * Rate / 100 > n + Rate / 5) why = "in padding";
                     else if (TextFilter.Clean(seg.Text, false).Length == 0) why = "empty after cleaning";
+                    else if (TextFilter.IsOutro(seg.Text)) why = "outro phrase";
                     else if (TextFilter.IsLikelyInvented(TextFilter.Clean(seg.Text, false), seg.NoSpeech, (seg.T1 - seg.T0) / 100.0, rms)) why = "looks invented";
                     if (Debug) Log.Info($"[subs]   {baseTime + seg.T0 / 100.0:0.00}–{baseTime + seg.T1 / 100.0:0.00} nsp {seg.NoSpeech:0.00} {(why.Length > 0 ? "DROPPED (" + why + ") " : "")}{seg.Text.Trim()}");
                     if (why.Length > 0) continue;
@@ -394,14 +403,30 @@ namespace Caption.Subtitles
         /// </summary>
         private static readonly bool Debug = Environment.GetEnvironmentVariable("CAPTION_DEBUG") == "1";
 
-        private List<(int From, int To)> SpeechWindows(float[] audio)
+        // Tuning knobs (environment, for the quality eval): which audio the speech detector and Whisper hear,
+        // and the detector's on/off thresholds.
+        private static readonly string VadSource = Environment.GetEnvironmentVariable("CAPTION_VAD_SRC") ?? "center";
+        private static readonly string AsrSource = Environment.GetEnvironmentVariable("CAPTION_ASR_SRC") ?? "center";
+        private static readonly float VadOn = EnvFloat("CAPTION_VAD_ON", 0.5f), VadOff = EnvFloat("CAPTION_VAD_OFF", 0.3f);
+        private static float EnvFloat(string name, float def) =>
+            float.TryParse(Environment.GetEnvironmentVariable(name), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : def;
+
+        private float[]? Vad(float[] a)
+        {
+            try { return _worker.DetectSpeech(a, a.Length); }
+            catch (WorkerException ex) { Log.WarnOnce("Subtitle VAD", ex); return null; }
+        }
+
+        private List<(int From, int To)> SpeechWindows(float[] center, float[] plain)
         {
             const int Frame = 512;
+            var audio = AsrSource == "plain" ? plain : center;
             float[]? probs = null;
             if (_hasVad)
             {
-                try { probs = _worker.DetectSpeech(audio, audio.Length); }
-                catch (WorkerException ex) { Log.WarnOnce("Subtitle VAD", ex); }
+                probs = Vad(VadSource == "plain" ? plain : center);
+                if (VadSource == "both" && probs != null && Vad(plain) is { } p2)
+                    for (int i = 0; i < Math.Min(probs.Length, p2.Length); i++) probs[i] = Math.Max(probs[i], p2[i]);
             }
             int frames = audio.Length / Frame;
             var speech = new bool[frames];
@@ -412,7 +437,7 @@ namespace Caption.Subtitles
                 for (int i = 0; i < frames; i++)
                 {
                     float p = i < probs.Length ? probs[i] : 0;
-                    on = on ? p >= 0.3f : p >= 0.5f;
+                    on = on ? p >= VadOff : p >= VadOn;
                     speech[i] = on;
                 }
             }
