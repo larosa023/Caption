@@ -60,7 +60,7 @@ jobs:
             '--subeval', "`"$root/test/engine`"", "`"$root/test/ggml-${{ matrix.model }}.bin`"", "`"$film`"", "`"$root/test/ref.srt`"", "`"$root/out`"", '--dialogue', "`"$root/test/mix.aif`"", "`"$root/test/musicfx.aif`"")
           if (Test-Path out/report.txt) { Get-Content out/report.txt } else { Write-Host "no report" }
           $log = Join-Path $env:LOCALAPPDATA 'Caption\caption.log'
-          if (Test-Path $log) { Write-Host '--- caption.log'; Get-Content $log -Tail 40 }
+          if (Test-Path $log) { Write-Host '--- caption.log'; Get-Content $log }
           Copy-Item test/ref.srt out/ -ErrorAction SilentlyContinue
           Copy-Item $log out/caption.log -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { throw "eval failed ($($p.ExitCode))" }
