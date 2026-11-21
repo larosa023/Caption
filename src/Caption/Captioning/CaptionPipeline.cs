@@ -487,15 +487,22 @@ namespace Caption.Captioning
         /// </summary>
         private void TrimBuffer()
         {
-            int wordIndex = 0, cutWords = -1;
-            long cutT1 = 0;
-            bool longBuffer = _bufCount > 10 * Rate;
+            // Cut at the second-to-last confirmed sentence end, so the buffer always starts with one finished
+            // sentence: Whisper hears the words leading into the current one, which helps a lot with short phrases.
+            int wordIndex = 0, cutWords = -1, lastWords = -1;
+            long cutT1 = 0, lastT1 = 0;
+            bool longBuffer = _bufCount > 12 * Rate;
             foreach (var seg in _segs)
             {
                 wordIndex += seg.Words;
                 if (wordIndex > _committed) break;
-                if (seg.Ends || longBuffer) { cutWords = wordIndex; cutT1 = seg.T1; }
+                if (seg.Ends || longBuffer)
+                {
+                    cutWords = lastWords; cutT1 = lastT1;
+                    lastWords = wordIndex; lastT1 = seg.T1;
+                }
             }
+            if (longBuffer && lastWords > 0) { cutWords = lastWords; cutT1 = lastT1; }
             if (cutWords <= 0) return;
             int cut = (int)Math.Clamp(cutT1 * Rate / 100, 0, _bufCount);
             if (cut < Rate / 2 || cut > _bufCount - Rate / 4) return; // leave a little audio, and don't trim tiny bits
