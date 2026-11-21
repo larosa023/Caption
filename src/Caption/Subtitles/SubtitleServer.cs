@@ -22,6 +22,7 @@ namespace Caption.Subtitles
     ///   POST   /v1/jobs                       { url, headers?, title?, position?, language?, audioIndex? } → { id, srt, vtt }
     ///   GET    /v1/jobs/{id}                  → { state, error, doneUntil, cues, version, language }
     ///   GET    /v1/jobs/{id}.srt              → the subtitles so far
+    ///   POST   /v1/jobs/{id}/audio            { audioIndex } → starts over on another audio track (same .srt address)
     ///   GET    /v1/jobs/{id}/cues?from=&amp;to=   → JSON cues in a time range
     ///   POST   /v1/jobs/{id}/position         { position } (call every few seconds while playing, and on seeks)
     ///   DELETE /v1/jobs/{id}
@@ -242,7 +243,7 @@ namespace Caption.Subtitles
                     ["id"] = j.Id,
                     ["state"] = j.State,
                     ["error"] = j.Error,
-                    ["doneUntil"] = Math.Round(j.DoneUntil, 2),
+                    ["doneUntil"] = Math.Round(j.ReadyUntil, 2),
                     ["cues"] = j.CueCount,
                     ["version"] = j.Version,
                     ["language"] = j.Language,
@@ -260,7 +261,16 @@ namespace Caption.Subtitles
                 double pos = 0;
                 try { pos = JsonNode.Parse(req.Body)?["position"]?.GetValue<double>() ?? 0; } catch { }
                 j.SetPosition(pos);
-                return (200, J, Json(new JsonObject { ["doneUntil"] = Math.Round(j.DoneUntil, 2), ["version"] = j.Version }));
+                return (200, J, Json(new JsonObject { ["doneUntil"] = Math.Round(j.ReadyUntil, 2), ["version"] = j.Version }));
+            }
+
+            if (parts.Length == 4 && parts[3] == "audio" && req.Method == "POST")
+            {
+                int idx = -1;
+                try { idx = JsonNode.Parse(req.Body)?["audioIndex"]?.GetValue<int>() ?? -1; } catch { }
+                if (idx < 0) return (400, J, Json(new JsonObject { ["error"] = "audioIndex is required" }));
+                j.SetAudio(idx);
+                return (200, J, Json(new JsonObject { ["version"] = j.Version }));
             }
 
             if (parts.Length == 4 && parts[3] == "cues" && req.Method == "GET")

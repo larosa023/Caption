@@ -47,7 +47,7 @@ namespace Caption.Subtitles
                 {
                     "error" => "Subtitles: " + j.Error,
                     "done" => $"Subtitles for {j.Title}: done",
-                    _ => $"Making subtitles for {(j.Title.Length > 0 ? j.Title : "the video")}" + (j.DoneUntil > 0 ? $" · ready to {Fmt(j.DoneUntil)}" : "…"),
+                    _ => $"Making subtitles for {(j.Title.Length > 0 ? j.Title : "the video")}" + (j.ReadyUntil > 0 ? $" · ready to {Fmt(j.ReadyUntil)}" : "…"),
                 };
             }
         }

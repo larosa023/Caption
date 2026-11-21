@@ -106,16 +106,62 @@ namespace Caption.Subtitles
         public void SetPosition(double seconds)
         {
             LastSeen = DateTime.UtcNow;
-            double old = _playhead;
-            _playhead = Math.Max(0, seconds);
+            seconds = Math.Max(0, seconds);
             bool covered;
             lock (_gate) covered = _covered.Any(r => seconds >= r.From - 1 && seconds < r.To - 2);
             bool insideReading = _readFrom <= seconds + 1 && seconds <= _readCursor + 15;
-            if (!covered && !insideReading && Math.Abs(seconds - old) > 3)
+            if (!covered && !insideReading && Math.Abs(seconds - _playhead) > 3)
             {
-                _restartAt = Math.Max(0, seconds - 1);
-                KillFfmpeg();
+                // A jump to somewhere not done yet. Players report a stray 0 (or other odd time) while a stream
+                // reloads, so only act on it once a second report agrees; until then playback is assumed to be
+                // where it was.
+                if (_pendingJump is double pj && Math.Abs(seconds - pj) < 8)
+                {
+                    _pendingJump = null;
+                    _playhead = seconds;
+                    _restartAt = Math.Max(0, seconds - 1);
+                    KillFfmpeg();
+                }
+                else _pendingJump = seconds;
+                return;
             }
+            _pendingJump = null;
+            _playhead = seconds;
+        }
+
+        private double? _pendingJump;
+
+        /// <summary>How far from where you are watching subtitles are ready without a gap.</summary>
+        public double ReadyUntil
+        {
+            get
+            {
+                double p = _playhead;
+                lock (_gate)
+                    foreach (var r in _covered)
+                        if (p >= r.From - 1 && p < r.To) return r.To;
+                return _readFrom <= p + 1 && DoneUntil >= p ? DoneUntil : p;
+            }
+        }
+
+        /// <summary>Switches to another audio track (another language or a commentary): everything starts over.</summary>
+        public void SetAudio(int index)
+        {
+            if (index == _req.AudioIndex) return;
+            Log.Info($"Subtitle job {Id}: audio track {_req.AudioIndex} → {index}");
+            _req.AudioIndex = index;
+            lock (_gate)
+            {
+                _cues.Clear();
+                _covered.Clear();
+                _language = null;
+                _languageVotes.Clear();
+                _version++;
+            }
+            DoneUntil = 0;
+            _restartAt = Math.Max(0, _playhead - 1);
+            KillFfmpeg();
+            Changed?.Invoke();
         }
 
         private double _readFrom, _readCursor;
