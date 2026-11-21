@@ -388,6 +388,9 @@ namespace Caption.Captioning
                 if (res != null)
                 {
                     var words = ToWords(res, count);
+                    if (Environment.GetEnvironmentVariable("CAPTION_DEBUG") == "1")
+                        Log.Info("flush: " + string.Join(" | ", res.Segments.Select(x => $"{x.T0}-{x.T1} ns={x.NoSpeech:0.00} '{x.Text}'")) +
+                                 $" lastSpeech={( _lastSpeech - _bufStart) / 160} committed={_committed} prev='{string.Join(' ', _prev.Select(w => w.Text))}'");
                     int b = Boundary(words);
                     for (int i = b; i < words.Count; i++) Confirm(words[i]);
                     _prev = words;

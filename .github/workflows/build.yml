@@ -75,6 +75,8 @@ jobs:
 
       - name: Self-test
         shell: pwsh
+        env:
+          CAPTION_DEBUG: "1"
         run: |
           $root = (Get-Location).Path
           $out = "$root/test/result.txt"
