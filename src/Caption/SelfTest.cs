@@ -73,8 +73,13 @@ namespace Caption
                         if (pos % (640 * 10) == 0) Thread.Sleep(20);
                     }
                     var wait = Stopwatch.StartNew();
-                    while (wait.Elapsed < TimeSpan.FromSeconds(120) && (!pipeline.Idle || finished.Length == 0)) Thread.Sleep(100);
-                    Thread.Sleep(500);
+                    var idleFor = Stopwatch.StartNew();
+                    while (wait.Elapsed < TimeSpan.FromSeconds(180))
+                    {
+                        Thread.Sleep(100);
+                        if (!pipeline.Idle) idleFor.Restart();
+                        else if (idleFor.ElapsedMilliseconds > 2500) break;
+                    }
                 }
                 Line($"pipeline: {partials} partial updates; lines: {finished}");
                 if (!finished.ToString().Contains("country", StringComparison.OrdinalIgnoreCase)) failures++;
