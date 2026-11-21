@@ -450,11 +450,11 @@ namespace Caption.Captioning
         /// <summary>A line that only repeats words from the last lines (a re-read that slipped through) isn't shown twice.</summary>
         private bool IsEcho(string text)
         {
-            var keys = text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(Key).ToList();
-            if (keys.Count == 0 || _recent.Count == 0) return false;
-            var previous = new HashSet<string>(_recent.SelectMany(r => r.Split(' ', StringSplitOptions.RemoveEmptyEntries)).Select(Key));
-            int seen = keys.Count(previous.Contains);
-            return keys.Count <= 6 && seen == keys.Count && _recent[^1].Length > text.Length;
+            if (_recent.Count == 0) return false;
+            string me = " " + string.Join(' ', text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(Key)) + " ";
+            string before = " " + string.Join(' ', string.Join(' ', _recent.TakeLast(2)).Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(Key)) + " ";
+            // Only an exact repeat of words just shown (same words, same order) counts.
+            return me.Trim().Length > 0 && before.Contains(me, StringComparison.Ordinal);
         }
 
         private void FinishLine()
