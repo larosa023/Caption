@@ -51,10 +51,22 @@ namespace Caption.Subtitles
                     bool tooLong = w.End - cur[0].Start > MaxDuration;
                     if (gap > PauseBreak || full || tooLong)
                     {
-                        // When the subtitle is full, move a dangling short clause start to the next one.
-                        groups.Add(cur);
-                        cur = new List<TimedWord>();
-                        chars = 0;
+                        // Full: break after the last comma instead of mid-phrase, if there is one.
+                        int k = -1;
+                        if (gap <= PauseBreak)
+                            for (int c = cur.Count - 2; c >= 1; c--)
+                                if (cur[c].Text[^1] is ',' or ';' or ':' or '—' or '，' or '、') { k = c; break; }
+                        if (k > 0)
+                        {
+                            groups.Add(cur.GetRange(0, k + 1));
+                            cur = cur.GetRange(k + 1, cur.Count - k - 1);
+                        }
+                        else
+                        {
+                            groups.Add(cur);
+                            cur = new List<TimedWord>();
+                        }
+                        chars = cur.Sum(x => x.Text.Length) + Math.Max(0, cur.Count - 1);
                     }
                 }
                 cur.Add(w);

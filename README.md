@@ -13,6 +13,7 @@
 
 ## Features
 
+- **Real subtitles in Ripple.** Ripple hands Caption the stream it's playing; Caption makes subtitles from the video's own audio ahead of playback (voice detection, 25-second context windows, word-level timing) and Ripple shows them as an "AI subtitles" track, timed to the word like downloaded subtitles. Apps on the same PC can use the same local API (`127.0.0.1:46277`, see [`SubtitleServer.cs`](src/Caption/Subtitles/SubtitleServer.cs)).
 - **Caption anything.** The whole PC, one output device, or only the apps you pick (each app's helper processes included, even if it plays on another device), plus your microphone. Per-app capture uses Windows' process loopback (Windows 10 2004+ / Windows 11).
 - **Fast and private.** Speech is recognized by [whisper.cpp](https://github.com/ggml-org/whisper.cpp) on your NVIDIA GPU (CUDA), typically well under a second behind the audio. Nothing is sent to the internet. No GPU? It runs on the CPU.
 - **Words appear as they're spoken.** The current line is re-read several times a second and corrected in place; it settles when the speaker pauses. Silero voice activity detection keeps silence and music from turning into text, and Whisper's usual inventions ("Thanks for watching!") are filtered out.
