@@ -1,0 +1,130 @@
+name: Build
+
+# Builds Caption.exe on every push, checks it with a real end-to-end self-test (whisper.cpp engine,
+# speech worker process and the streaming pipeline transcribing a sample), and publishes a GitHub
+# Release when <Version> in src/Caption/Caption.csproj changes on main (or a v* tag is pushed).
+# Versions with a "-" (0.2.0-beta.1) are published as pre-releases: the Beta channel.
+on:
+  push:
+    branches: ["**"]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  WHISPER_CPP: "1.8.2"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Work out version
+        id: version
+        shell: bash
+        run: |
+          v=$(grep -oE '<Version>[^<]+' src/Caption/Caption.csproj | sed 's/<Version>//')
+          if [ "${{ github.ref_type }}" = "tag" ]; then v="${GITHUB_REF_NAME#v}"; fi
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+          echo "Version $v"
+
+      # whisper.cpp needs the Microsoft C++ runtime; bundle it so Caption works without the VC++ redistributable.
+      - name: Bundle C++ runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src/Caption/Native | Out-Null
+          foreach ($f in 'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','vcomp140.dll') {
+            $p = Join-Path $env:WINDIR "System32\$f"
+            if (Test-Path $p) { Copy-Item $p src/Caption/Native/ ; Write-Host "bundled $f" } else { Write-Host "missing $f" }
+          }
+
+      - name: Publish Caption.exe
+        run: >
+          dotnet publish src/Caption/Caption.csproj
+          -c Release -r win-x64
+          -p:Version=${{ steps.version.outputs.value }}
+          -o publish
+
+      - name: Get test engine, model and sample
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          New-Item -ItemType Directory -Force test/engine | Out-Null
+          Invoke-WebRequest "https://github.com/ggml-org/whisper.cpp/releases/download/v$env:WHISPER_CPP/whisper-bin-x64.zip" -OutFile test/cpu.zip
+          $hash = (Get-FileHash test/cpu.zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne 'b1514ebc099765e39fa37eb780b92a140a94c86bb0b3b3d98226b38825979732') { throw "engine checksum mismatch: $hash" }
+          Expand-Archive test/cpu.zip test/zip
+          foreach ($f in 'whisper.dll','ggml.dll','ggml-base.dll','ggml-cpu.dll') { Copy-Item "test/zip/Release/$f" test/engine/ }
+          Copy-Item src/Caption/Native/*.dll test/engine/
+          Invoke-WebRequest "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin" -OutFile test/ggml-tiny.bin
+          Invoke-WebRequest "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin" -OutFile test/vad.bin
+          Invoke-WebRequest "https://raw.githubusercontent.com/ggml-org/whisper.cpp/v$env:WHISPER_CPP/samples/jfk.wav" -OutFile test/jfk.wav
+          Get-ChildItem test, test/engine | Format-Table Name, Length
+
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $root = (Get-Location).Path
+          $out = "$root/test/result.txt"
+          $p = Start-Process -FilePath "$root/publish/Caption.exe" -PassThru -Wait -ArgumentList @(
+            '--selftest', "`"$root/test/engine`"", "`"$root/test/ggml-tiny.bin`"", "`"$root/test/jfk.wav`"", "`"$out`"", "`"$root/test/vad.bin`"")
+          if (Test-Path $out) { Get-Content $out } else { Write-Host "no result file" }
+          $log = Join-Path $env:LOCALAPPDATA 'Caption\caption.log'
+          if (Test-Path $log) { Write-Host '--- caption.log'; Get-Content $log -Tail 60 }
+          if ($p.ExitCode -ne 0) { throw "self-test failed ($($p.ExitCode))" }
+
+      - name: Checksums
+        shell: bash
+        run: |
+          cd publish
+          sha256sum Caption.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Caption-win-x64
+          path: |
+            publish/Caption.exe
+            publish/SHA256SUMS.txt
+
+      - name: Decide release
+        id: rel
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ steps.version.outputs.value }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [[ "$TAG" == *-* ]]; then echo "pre=true" >> "$GITHUB_OUTPUT"; else echo "pre=false" >> "$GITHUB_OUTPUT"; fi
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"; echo "Release $TAG already exists; nothing to do."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"; echo "Will publish $TAG"
+          fi
+
+      - name: Release
+        if: steps.rel.outputs.publish == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Caption ${{ steps.rel.outputs.tag }}
+          prerelease: ${{ steps.rel.outputs.pre }}
+          body_path: CHANGELOG-latest.md
+          files: |
+            publish/Caption.exe
+            publish/SHA256SUMS.txt

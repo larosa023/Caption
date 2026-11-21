@@ -1,0 +1,53 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <AssemblyName>Caption</AssemblyName>
+    <RootNamespace>Caption</RootNamespace>
+    <StartupObject>Caption.Program</StartupObject>
+    <ApplicationIcon>Assets\Caption.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!-- Bump this and push to main to publish a new release. A version with a "-" (0.2.0-beta.1) is a Beta. -->
+    <Version>0.1.0</Version>
+    <Product>Caption</Product>
+    <Description>Live captions and translation for anything playing on your PC, 100% local.</Description>
+    <Copyright>Copyright © 2026 Anthony</Copyright>
+
+    <!-- Lightweight: English-only framework resources, no background GC thread, debug info embedded. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+    <DebugType>embedded</DebugType>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <NoWarn>$(NoWarn);CA1416;WFAC010</NoWarn>
+  </PropertyGroup>
+
+  <!-- One portable exe (the suite's "portable" install type). Models and the whisper engine are downloaded at first run. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\Caption.png" />
+    <!-- Microsoft C++ runtime DLLs that whisper.cpp needs; CI copies them in from the build machine
+         so Caption works on PCs without the VC++ redistributable. Missing in local builds is fine. -->
+    <EmbeddedResource Include="Native\*.dll" LogicalName="native/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>
