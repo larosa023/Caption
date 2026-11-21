@@ -340,8 +340,7 @@ namespace Caption.Views
 
         /// <summary>
         /// Breaks text into subtitle "cards" of at most two lines of maxChars, keeps the newest card, and balances
-        /// its two lines (preferring a break after punctuation). Returns the text with '
-' and where dimming starts.
+        /// its two lines (preferring a break after punctuation). Returns the text (lines joined by a newline) and where dimming starts.
         /// </summary>
         public static (string Text, int DimFrom) FormatSubtitle(string text, int stableWords, int maxChars)
         {
