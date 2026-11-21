@@ -49,6 +49,7 @@ namespace Caption.Captioning
         private const int PrerollFrames = 8;       // 256 ms kept from before speech starts
         private const int VadContext = Rate;
         private const int MaxBufferSeconds = 18;   // whisper's window is 30 s; keep well inside it
+        private const int KeepAfterPause = 4;      // seconds of audio kept as context after a pause
 
         private sealed class Word
         {
@@ -89,6 +90,7 @@ namespace Caption.Captioning
         private int _bufCount;
         private long _bufStart;                     // absolute sample index of _buf[0]
         private int _sinceInference;
+        private long _pausedAt;
 
         // agreement state
         private List<Word> _prev = new();           // the previous read's words for the buffer
@@ -275,16 +277,25 @@ namespace Caption.Captioning
             {
                 _preroll.Enqueue(frame);
                 while (_preroll.Count > PrerollFrames) _preroll.Dequeue();
+                if (_bufCount > 0)
+                {
+                    // Right after a pause the audio is kept, so the next sentence is heard in context.
+                    AppendBuf(frame);
+                    if (_consumed - _pausedAt > KeepAfterPause * Rate || _bufCount >= MaxBufferSeconds * Rate)
+                        ResetBuffer();
+                }
                 _speechRun = speech ? _speechRun + 1 : 0;
                 if (_speechRun >= 2)
                 {
                     _active = true;
                     _silenceRun = 0;
-                    _bufCount = 0;
-                    _bufStart = _consumed - (long)(_preroll.Count - 1) * Frame;
-                    foreach (var f in _preroll) AppendBuf(f);
+                    if (_bufCount == 0)
+                    {
+                        _bufStart = _consumed - (long)(_preroll.Count - 1) * Frame;
+                        foreach (var f in _preroll) AppendBuf(f);
+                    }
                     _preroll.Clear();
-                    _sinceInference = _bufCount;
+                    _sinceInference = _o.UpdateIntervalMs * Rate / 1000 - 3 * Frame; // first read ~100 ms from now
                 }
                 return;
             }
@@ -295,16 +306,17 @@ namespace Caption.Captioning
 
             if (_silenceRun * 32 >= _o.PauseToEndMs)
             {
-                // The speaker paused: settle everything heard so far.
-                Flush();
+                // The speaker paused: settle everything heard so far and end the line on screen.
+                Flush(endLine: true);
                 _active = false;
                 _speechRun = 0;
-                _preroll.Clear();
+                _pausedAt = _consumed;
             }
             else if (_bufCount >= MaxBufferSeconds * Rate)
             {
-                // Long stretch with no sentence end Whisper agreed on: settle it and start fresh.
-                Flush();
+                // A long stretch Whisper never put a sentence end in: settle it and make room.
+                Flush(endLine: false);
+                if (_bufCount >= (MaxBufferSeconds - 2) * Rate) ResetBuffer();
             }
         }
 
@@ -317,6 +329,28 @@ namespace Caption.Captioning
 
         // ---------------------------------------------------------------- agreement
 
+        /// <summary>
+        /// Where the confirmed words end in a new read. Usually the same index as before, but a re-read can merge or
+        /// split a word earlier on, so look a few words either side for the last confirmed words.
+        /// </summary>
+        private int Boundary(List<Word> words)
+        {
+            if (_committed == 0) return 0;
+            string last = _prev[_committed - 1].Key;
+            string? before = _committed >= 2 ? _prev[_committed - 2].Key : null;
+            for (int d = 0; d <= 3; d++)
+            {
+                foreach (int j in new[] { _committed + d, _committed - d })
+                {
+                    if (j < 1 || j > words.Count) continue;
+                    if (words[j - 1].Key != last) continue;
+                    if (before != null && j >= 2 && words[j - 2].Key != before) continue;
+                    return j;
+                }
+            }
+            return Math.Min(_committed, words.Count);
+        }
+
         /// <summary>Re-read the buffer, confirm the words two reads agree on, show the rest as tentative.</summary>
         private void Step()
         {
@@ -325,23 +359,22 @@ namespace Caption.Captioning
             if (res == null) return;
             var words = ToWords(res, _bufCount);
 
+            int b = Boundary(words);
             int agree = 0;
-            while (agree < words.Count && agree < _prev.Count && words[agree].Key == _prev[agree].Key) agree++;
-            if (agree > _committed)
-            {
-                for (int i = _committed; i < agree; i++) Confirm(words[i]);
-                _committed = agree;
-            }
+            while (b + agree < words.Count && _committed + agree < _prev.Count &&
+                   words[b + agree].Key == _prev[_committed + agree].Key) agree++;
+            for (int i = b; i < b + agree; i++) Confirm(words[i]);
             _prev = words;
+            _committed = b + agree;
             TrimBuffer();
             ShowProgress(words.Skip(_committed));
         }
 
         /// <summary>Pause or full buffer: one final, careful read; everything it says is confirmed.</summary>
-        private void Flush()
+        private void Flush(bool endLine)
         {
             int count = _bufCount;
-            // Drop most of the trailing silence (keep ~200 ms for word endings).
+            // Leave out most of the trailing silence (keep ~200 ms for word endings).
             int trailing = Math.Max(0, (_silenceRun - 6) * Frame);
             count = Math.Max(0, count - trailing);
             if (count >= Rate / 4)
@@ -350,15 +383,33 @@ namespace Caption.Captioning
                 if (res != null)
                 {
                     var words = ToWords(res, count);
-                    // Keep words already confirmed; take the rest from the final read.
-                    int same = 0;
-                    while (same < words.Count && same < _committed && words[same].Key == _prev[same].Key) same++;
-                    int from = same == _committed ? _committed : Math.Min(_committed, words.Count);
-                    for (int i = from; i < words.Count; i++) Confirm(words[i]);
+                    int b = Boundary(words);
+                    for (int i = b; i < words.Count; i++) Confirm(words[i]);
+                    _prev = words;
+                    _committed = words.Count;
+                    TrimBuffer();
                 }
             }
-            FinishLine();
-            Reset(clearScreen: false);
+            if (endLine) FinishLine();
+            ShowProgress(Enumerable.Empty<Word>());
+        }
+
+        /// <summary>Text whose audio has left the buffer becomes the prompt for later reads (never text still in the buffer).</summary>
+        private void AddContext(IEnumerable<Word> words)
+        {
+            string t = string.Join(' ', words.Select(w => w.Text));
+            if (t.Length == 0) return;
+            _context = (_context + " " + t).Trim();
+            if (_context.Length > 220) _context = _context.Substring(_context.Length - 220);
+        }
+
+        private void ResetBuffer()
+        {
+            AddContext(_prev.Take(_committed));
+            _bufCount = 0;
+            _prev = new List<Word>();
+            _committed = 0;
+            _language = null;
         }
 
         private void Confirm(Word w)
@@ -380,8 +431,6 @@ namespace Caption.Captioning
             if (!text.Any(char.IsLetterOrDigit)) return;
             string? original = null;
             if (_o.TranslateToEnglish && _o.KeepOriginal && DetectedLanguage != "en") original = Original(start, end);
-            _context = (_context + " " + text).Trim();
-            if (_context.Length > 220) _context = _context.Substring(_context.Length - 220);
             LastDelayMs = Delay();
             Finished?.Invoke(new FinishedLine
             {
@@ -415,6 +464,7 @@ namespace Caption.Captioning
             Array.Copy(_buf, cut, _buf, 0, _bufCount - cut);
             _bufCount -= cut;
             _bufStart += cut;
+            AddContext(_prev.Take(cutWords));
             _prev = _prev.Skip(cutWords).ToList();
             _committed = Math.Max(0, _committed - cutWords);
         }
@@ -433,12 +483,9 @@ namespace Caption.Captioning
         private void Reset(bool clearScreen)
         {
             _active = false;
-            _bufCount = 0;
+            ResetBuffer();
             _speechRun = 0;
             _silenceRun = 0;
-            _prev = new List<Word>();
-            _committed = 0;
-            _language = null;
             if (clearScreen) _line.Clear();
             if (_lastStable.Length > 0 || _lastTentative.Length > 0 || clearScreen)
             {
