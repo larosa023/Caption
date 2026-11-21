@@ -112,7 +112,8 @@ namespace Caption.Subtitles
 
             Stop();
             var (worker, info) = await Task.Run(() => GetWorker(engine, model), ct);
-            var job = new SubtitleJob(req, worker, info.HasVad, info.GpuActive ? 5 : 2);
+            int beam = int.TryParse(Environment.GetEnvironmentVariable("CAPTION_BEAM"), out var b) && b > 0 ? b : info.GpuActive ? 5 : 2;
+            var job = new SubtitleJob(req, worker, info.HasVad, beam);
             job.Changed += () => Changed?.Invoke();
             lock (_gate) _job = job;
             _lastActivity = DateTime.UtcNow;
@@ -138,7 +139,7 @@ namespace Caption.Subtitles
             try
             {
                 string vad = _testPaths != null ? Path.Combine(Path.GetDirectoryName(modelPath)!, "vad.bin") : ModelCatalog.VadPath;
-                var info = w.Load(engineDir, modelPath, engine.Gpu, vad, engine.Gpu ? 4 : Math.Clamp(Environment.ProcessorCount / 2, 2, 8), DtwPreset(modelPath));
+                var info = w.Load(engineDir, modelPath, engine.Gpu, vad, engine.Gpu ? 4 : int.TryParse(Environment.GetEnvironmentVariable("CAPTION_THREADS"), out var th) && th > 0 ? th : Math.Clamp(Environment.ProcessorCount / 2, 2, 8), DtwPreset(modelPath));
                 lock (_gate) { _worker = w; _info = info; _workerKey = key; }
                 return (w, info);
             }

@@ -1,0 +1,69 @@
+name: Subtitle quality
+
+# Makes AI subtitles for Blender's open movie "Tears of Steel" (CC-BY, dialogue over music and effects)
+# the same way Ripple's jobs do, and scores them against the film's official English subtitles:
+# lines caught, start/end timing and layout. Run by hand or by pushing to an eval/* branch.
+on:
+  push:
+    branches: ["eval/**"]
+  workflow_dispatch:
+
+env:
+  WHISPER_CPP: "1.8.2"
+
+jobs:
+  eval:
+    runs-on: windows-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [small, large-v3]
+        audio: [stereo, surround]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+      - name: Publish Caption.exe
+        run: dotnet publish src/Caption/Caption.csproj -c Release -r win-x64 -o publish
+
+      - name: Get engine, models and the film
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          New-Item -ItemType Directory -Force test/engine | Out-Null
+          Invoke-WebRequest "https://github.com/ggml-org/whisper.cpp/releases/download/v$env:WHISPER_CPP/whisper-bin-x64.zip" -OutFile test/cpu.zip
+          Expand-Archive test/cpu.zip test/zip
+          foreach ($f in 'whisper.dll','ggml.dll','ggml-base.dll','ggml-cpu.dll') { Copy-Item "test/zip/Release/$f" test/engine/ }
+          Invoke-WebRequest "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-${{ matrix.model }}.bin" -OutFile "test/ggml-${{ matrix.model }}.bin"
+          Invoke-WebRequest "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin" -OutFile test/vad.bin
+          Invoke-WebRequest "https://download.blender.org/demo/movies/ToS/subtitles/TOS-en.srt" -OutFile test/ref.srt
+          if ('${{ matrix.audio }}' -eq 'surround') {
+            Invoke-WebRequest "https://download.blender.org/demo/movies/ToS/Surround-TOS_DVDSURROUND-Dolby%205.1.ac3" -OutFile test/film.ac3
+          } else {
+            Invoke-WebRequest "https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov" -OutFile test/film.mov
+          }
+          Get-ChildItem test | Format-Table Name, Length
+
+      - name: Make and score subtitles
+        shell: pwsh
+        env:
+          CAPTION_BEAM: "5"
+          CAPTION_THREADS: "4"
+        run: |
+          $root = (Get-Location).Path
+          $film = if ('${{ matrix.audio }}' -eq 'surround') { "$root/test/film.ac3" } else { "$root/test/film.mov" }
+          $p = Start-Process -FilePath "$root/publish/Caption.exe" -PassThru -Wait -ArgumentList @(
+            '--subeval', "`"$root/test/engine`"", "`"$root/test/ggml-${{ matrix.model }}.bin`"", "`"$film`"", "`"$root/test/ref.srt`"", "`"$root/out`"")
+          if (Test-Path out/report.txt) { Get-Content out/report.txt } else { Write-Host "no report" }
+          $log = Join-Path $env:LOCALAPPDATA 'Caption\caption.log'
+          if (Test-Path $log) { Write-Host '--- caption.log'; Get-Content $log -Tail 40 }
+          Copy-Item test/ref.srt out/ -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "eval failed ($($p.ExitCode))" }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-${{ matrix.model }}-${{ matrix.audio }}
+          path: out/

@@ -16,6 +16,7 @@ namespace Caption
             // The speech worker and the CI self-test never touch the UI.
             if (Has(args, "--worker")) return WorkerHost.Run();
             if (Has(args, "--selftest")) return SelfTest.Run(args);
+            if (Has(args, "--subeval")) return SubEval.Run(args);
             int ui = Array.FindIndex(args, a => a == "--uitest");
             if (ui >= 0 && ui + 1 < args.Length) return UiTest.Run(args[ui + 1]);
 
