@@ -360,14 +360,18 @@ namespace Caption.Captioning
         private void Step()
         {
             _sinceInference = 0;
-            var res = Run(_bufCount, final: false);
+            // Read only up to just after the last voice: Whisper tends to invent words over trailing silence.
+            int count = (int)Math.Clamp(_lastSpeech - _bufStart + Rate * 3 / 10, Rate / 2, _bufCount);
+            var res = Run(count, final: false);
             if (res == null) return;
-            var words = ToWords(res, _bufCount);
+            var words = ToWords(res, count);
 
             int b = Boundary(words);
             int agree = 0;
             while (b + agree < words.Count && _committed + agree < _prev.Count &&
                    words[b + agree].Key == _prev[_committed + agree].Key) agree++;
+            // During a pause, leave confirming to the final read.
+            if (_silenceRun * 32 >= 250) agree = 0;
             for (int i = b; i < b + agree; i++) Confirm(words[i]);
             _prev = words;
             _committed = b + agree;
