@@ -47,6 +47,10 @@ namespace Caption
                 File.WriteAllText(Path.Combine(outDir, "ai.srt"), CueBuilder.ToSrt(ai));
                 var refs = ParseSrt(File.ReadAllText(refPath));
                 Score(refs, ai, Line);
+                // Exact timing from the isolated dialogue: full mix minus the music-and-effects mix.
+                int d = Array.FindIndex(args, a => a == "--dialogue");
+                if (d >= 0 && args.Length > d + 2)
+                    ScoreAgainstDialogue(ReadMono(args[d + 1]), ReadMono(args[d + 2]), ai, Line);
                 return 0;
             }
             catch (Exception ex)
@@ -54,6 +58,110 @@ namespace Caption
                 Line("ERROR: " + ex);
                 return 1;
             }
+        }
+
+        private static float[] ReadMono(string path)
+        {
+            if (!Ffmpeg.IsInstalled) Ffmpeg.EnsureAsync(null, default).Wait();
+            var p = Ffmpeg.StartAudio(path, null, null, 0, 0);
+            p.BeginErrorReadLine();
+            var s = p.StandardOutput.BaseStream;
+            var ms = new MemoryStream();
+            s.CopyTo(ms);
+            p.WaitForExit();
+            var f = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(ms.GetBuffer().AsSpan(0, (int)(ms.Length / 8 * 8)));
+            var mono = new float[f.Length / 2];
+            for (int i = 0; i < mono.Length; i++) mono[i] = (f[2 * i] + f[2 * i + 1]) * 0.5f;
+            return mono;
+        }
+
+        /// <summary>
+        /// Speech on/off from the dialogue stem (10 ms frames), then each AI subtitle's start against the nearest
+        /// speech onset and its end against the nearest speech end; plus how much speech has no subtitle at all.
+        /// </summary>
+        private static void ScoreAgainstDialogue(float[] mix, float[] musicFx, List<Cue> ai, Action<string> Line)
+        {
+            const int Rate = 16000, Hop = 160;
+            int len = Math.Min(mix.Length, musicFx.Length);
+            // Line the two up (they should already be): best lag within ±50 ms.
+            int bestLag = 0; double bestE = double.MaxValue;
+            for (int lag = -800; lag <= 800; lag += 8)
+            {
+                double e = 0;
+                for (int i = Rate * 60; i < Rate * 90 && i + lag < len && i + lag >= 0; i += 4) { double v = mix[i] - musicFx[i + lag]; e += v * v; }
+                if (e < bestE) { bestE = e; bestLag = lag; }
+            }
+            var dia = new float[len];
+            for (int i = 0; i < len; i++) { int j = i + bestLag; dia[i] = mix[i] - (j >= 0 && j < len ? musicFx[j] : 0); }
+            double Energy(float[] a) { double e = 0; foreach (var v in a) e += v * v; return Math.Sqrt(e / Math.Max(1, a.Length)); }
+            Line($"\ndialogue stem: lag {bestLag / 16.0:0.0} ms, rms mix {20 * Math.Log10(Energy(mix) + 1e-9):0.0} dB, music+fx {20 * Math.Log10(Energy(musicFx) + 1e-9):0.0} dB, dialogue {20 * Math.Log10(Energy(dia) + 1e-9):0.0} dB");
+
+            int frames = len / Hop;
+            var db = new double[frames];
+            for (int f = 0; f < frames; f++)
+            {
+                double e = 0;
+                for (int i = f * Hop; i < f * Hop + 2 * Hop && i < len; i++) e += dia[i] * dia[i];
+                db[f] = 10 * Math.Log10(e / (2 * Hop) + 1e-12);
+            }
+            var sorted = db.OrderBy(x => x).ToArray();
+            double floor = sorted[(int)(frames * 0.3)], peak = sorted[(int)(frames * 0.99)];
+            double thr = Math.Max(floor + 12, peak - 40);
+            // Speech mask with 150 ms hangover and runs shorter than 80 ms dropped.
+            var on = new bool[frames];
+            for (int f = 0; f < frames; f++) if (db[f] > thr) for (int k = 0; k < 15 && f + k < frames; k++) on[f + k] = true;
+            var runs = new List<(double A, double B)>();
+            for (int f = 0; f < frames;)
+            {
+                if (!on[f]) { f++; continue; }
+                int g = f; while (g < frames && on[g]) g++;
+                double a = f * 0.01, b = (g - 15) * 0.01 + 0.02;
+                if (b - a >= 0.08)
+                {
+                    if (runs.Count > 0 && a - runs[^1].B < 0.25) runs[^1] = (runs[^1].A, b); else runs.Add((a, b));
+                }
+                f = g;
+            }
+            Line($"dialogue: threshold {thr:0.0} dB (floor {floor:0.0}, peak {peak:0.0}), {runs.Count} speech runs, {runs.Sum(r => r.B - r.A):0} s of speech");
+
+            var startErr = new List<double>();
+            var endErr = new List<double>();
+            foreach (var c in ai)
+            {
+                var onset = runs.Select(r => r.A).Where(t => Math.Abs(t - c.Start) < 1.5).OrderBy(t => Math.Abs(t - c.Start)).Cast<double?>().FirstOrDefault();
+                if (onset is double o) startErr.Add(c.Start - o);
+                // The speech end this subtitle covers: last run end inside it, or the first after its start.
+                var ends = runs.Select(r => r.B).Where(t => t > c.Start + 0.2 && t < c.End + 2.0).ToList();
+                var inside = ends.Where(t => t <= c.End + 0.2).ToList();
+                double? e = inside.Count > 0 ? inside.Max() : ends.Count > 0 ? ends.Min() : null;
+                if (e is double ee) endErr.Add(c.End - ee);
+            }
+            Line($"start vs speech onset ({startErr.Count}): {Stats(startErr)}");
+            Line($"end vs speech end ({endErr.Count}): {Stats(endErr)}  (subtitles normally stay ~0.3–0.7 s past the voice)");
+
+            // Speech with no subtitle on screen.
+            double total = 0, uncovered = 0;
+            var gaps = new List<string>();
+            foreach (var r in runs)
+            {
+                if (r.B - r.A < 0.3) continue;
+                total += r.B - r.A;
+                double covered = 0;
+                foreach (var c in ai) covered += Math.Max(0, Math.Min(r.B, c.End) - Math.Max(r.A, c.Start));
+                double miss = Math.Max(0, r.B - r.A - covered);
+                uncovered += miss;
+                if (miss > 0.5 * (r.B - r.A) && r.B - r.A >= 0.4) gaps.Add($"  {Fmt(r.A)}–{Fmt(r.B)} ({r.B - r.A:0.0} s)");
+            }
+            Line($"speech with no subtitle: {uncovered:0.0} s of {total:0.0} s ({100 * uncovered / Math.Max(1, total):0.0}%), {gaps.Count} runs mostly uncovered:");
+            foreach (var g in gaps) Line(g);
+            // Subtitles up with nobody talking.
+            double idle = 0;
+            foreach (var c in ai)
+            {
+                double sp = runs.Sum(r => Math.Max(0, Math.Min(r.B, c.End) - Math.Max(r.A, c.Start)));
+                idle += Math.Max(0, c.End - c.Start - sp);
+            }
+            Line($"subtitle time with no speech under it: {idle:0.0} s of {ai.Sum(c => c.End - c.Start):0.0} s");
         }
 
         public static List<Cue> ParseSrt(string text)

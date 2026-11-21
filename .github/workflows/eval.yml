@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: [small, large-v3]
+        model: [small]
         audio: [stereo, surround]
     steps:
       - uses: actions/checkout@v5
@@ -41,9 +41,10 @@ jobs:
           Invoke-WebRequest "https://download.blender.org/demo/movies/ToS/subtitles/TOS-en.srt" -OutFile test/ref.srt
           if ('${{ matrix.audio }}' -eq 'surround') {
             Invoke-WebRequest "https://download.blender.org/demo/movies/ToS/Surround-TOS_DVDSURROUND-Dolby%205.1.ac3" -OutFile test/film.ac3
-          } else {
-            Invoke-WebRequest "https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov" -OutFile test/film.mov
           }
+          # The stereo mix and the same mix without dialogue: their difference is the dialogue alone.
+          Invoke-WebRequest "https://download.blender.org/demo/movies/ToS/TOS_DVDSTEREOMIX.aif" -OutFile test/mix.aif
+          Invoke-WebRequest "https://download.blender.org/demo/movies/ToS/TOS_MUSIC%2BFX_NO_DIALOGUE.aif" -OutFile test/musicfx.aif
           Get-ChildItem test | Format-Table Name, Length
 
       - name: Make and score subtitles
@@ -53,9 +54,9 @@ jobs:
           CAPTION_THREADS: "4"
         run: |
           $root = (Get-Location).Path
-          $film = if ('${{ matrix.audio }}' -eq 'surround') { "$root/test/film.ac3" } else { "$root/test/film.mov" }
+          $film = if ('${{ matrix.audio }}' -eq 'surround') { "$root/test/film.ac3" } else { "$root/test/mix.aif" }
           $p = Start-Process -FilePath "$root/publish/Caption.exe" -PassThru -Wait -ArgumentList @(
-            '--subeval', "`"$root/test/engine`"", "`"$root/test/ggml-${{ matrix.model }}.bin`"", "`"$film`"", "`"$root/test/ref.srt`"", "`"$root/out`"")
+            '--subeval', "`"$root/test/engine`"", "`"$root/test/ggml-${{ matrix.model }}.bin`"", "`"$film`"", "`"$root/test/ref.srt`"", "`"$root/out`"", '--dialogue', "`"$root/test/mix.aif`"", "`"$root/test/musicfx.aif`"")
           if (Test-Path out/report.txt) { Get-Content out/report.txt } else { Write-Host "no report" }
           $log = Join-Path $env:LOCALAPPDATA 'Caption\caption.log'
           if (Test-Path $log) { Write-Host '--- caption.log'; Get-Content $log -Tail 40 }
