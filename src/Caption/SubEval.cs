@@ -166,7 +166,7 @@ namespace Caption
             var cps = ai.Select(c => c.Text.Replace("\n", "").Length / Math.Max(0.1, c.End - c.Start)).ToList();
             var rlen = refs.Select(c => c.Text.Replace("\n", " ").Length).ToList();
             Line($"ai layout: chars avg {Avg(len):0} (reference {Avg(rlen):0}), duration avg {Avg(dur):0.0} s (reference {Avg(refs.Select(c => c.End - c.Start)):0.0} s), " +
-                 $"two-line {100.0 * ai.Count(c => c.Text.Contains('\n')) / Math.Max(1, ai.Count):0}%, over 20 cps {ai.Count == 0 ? 0 : 100.0 * cps.Count(v => v > 20) / ai.Count:0}%, " +
+                 $"two-line {100.0 * ai.Count(c => c.Text.Contains('\n')) / Math.Max(1, ai.Count):0}%, over 20 cps {(ai.Count == 0 ? 0 : 100.0 * cps.Count(v => v > 20) / ai.Count):0}%, " +
                  $"over 7 s {dur.Count(d => d > 7)}, under 1 s {dur.Count(d => d < 0.99)}");
             Line($"missed lines ({missed.Count}):");
             foreach (var s in missed) Line(s);
